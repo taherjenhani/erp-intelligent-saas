@@ -6,9 +6,13 @@ const envSchema = z.object({
 
   DATABASE_URL: z.string().min(1),
 
-  JWT_SECRET: z
+  JWT_ACCESS_SECRET: z
     .string()
-    .min(32, "JWT_SECRET must contain at least 32 characters"),
+    .min(32, "JWT_ACCESS_SECRET must contain at least 32 characters"),
+
+  JWT_REFRESH_SECRET: z
+    .string()
+    .min(32, "JWT_REFRESH_SECRET must contain at least 32 characters"),
 
   PASSWORD_PEPPER: z
     .string()
