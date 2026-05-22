@@ -1,24 +1,35 @@
 import { prisma } from "../../lib/prisma";
 
-import { RegisterInput } from "./auth.schema";
+import type {
+  RegisterInput,
+} from "./auth.schema";
 
-import { hashPassword } from "../../utils/hash";
+import {
+  hashPassword,
+} from "../../utils/hash";
 
-export async function registerUser(data: RegisterInput) {
-  const existingUser =
+export async function registerUser(
+  data: RegisterInput
+) {
+  const email =
+    data.email
+      .trim()
+      .toLowerCase();
+
+  const existing =
     await prisma.user.findUnique({
       where: {
-        email: data.email,
+        email,
       },
     });
 
-  if (existingUser) {
+  if (existing) {
     throw new Error(
-      "EMAIL_ALREADY_EXISTS"
+      "AUTH_EMAIL_ALREADY_EXISTS"
     );
   }
 
-  const password =
+  const hashedPassword =
     await hashPassword(
       data.password
     );
@@ -27,15 +38,15 @@ export async function registerUser(data: RegisterInput) {
     await prisma.user.create({
       data: {
         firstName:
-          data.firstName,
+          data.firstName.trim(),
 
         lastName:
-          data.lastName,
+          data.lastName.trim(),
 
-        email:
-          data.email,
+        email,
 
-        password,
+        password:
+          hashedPassword,
 
         role:
           "EMPLOYEE",
@@ -51,6 +62,8 @@ export async function registerUser(data: RegisterInput) {
         email: true,
 
         role: true,
+
+        isActive: true,
 
         createdAt: true,
       },
