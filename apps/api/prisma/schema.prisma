@@ -13,14 +13,170 @@ enum Role {
   EMPLOYEE
 }
 
+enum SessionStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum AuditAction {
+  REGISTER
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  REFRESH_TOKEN
+  TOKEN_REUSE_DETECTED
+  ACCESS_DENIED
+}
+
 model User {
-  id        String   @id @default(cuid())
+  id        String  @id @default(cuid())
   firstName String
   lastName  String
-  email     String   @unique
+  email     String  @unique
   password  String
-  role      Role     @default(EMPLOYEE)
-  isActive  Boolean  @default(true)
+  role      Role    @default(EMPLOYEE)
+  isActive  Boolean @default(true)
+
+  sessions      Session[]
+  storeAccesses UserStoreAccess[]
+  auditLogs     AuditLog[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([email])
+  @@index([role])
+}
+
+model Store {
+  id       String  @id @default(cuid())
+  name     String
+  code     String  @unique
+  address  String?
+  isActive Boolean @default(true)
+
+  warehouses   Warehouse[]
+  userAccesses UserStoreAccess[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
+}
+
+model Warehouse {
+  id       String  @id @default(cuid())
+  name     String
+  code     String  @unique
+  location String?
+  isActive Boolean @default(true)
+
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Restrict)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([storeId])
+  @@index([code])
+}
+
+model Permission {
+  id          String  @id @default(cuid())
+  key         String  @unique
+  description String?
+
+  rolePermissions RolePermission[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([key])
+}
+
+model RolePermission {
+  id String @id @default(cuid())
+
+  role Role
+
+  permissionId String
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([role, permissionId])
+  @@index([role])
+}
+
+model UserStoreAccess {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  storeId String
+  store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, storeId])
+  @@index([userId])
+  @@index([storeId])
+}
+
+model Session {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  status SessionStatus @default(ACTIVE)
+
+  userAgent String?
+  ipAddress String?
+
+  refreshTokens RefreshToken[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  expiresAt DateTime
+
+  @@index([userId])
+  @@index([status])
+}
+
+model RefreshToken {
+  id String @id @default(cuid())
+
+  tokenHash String @unique
+  familyId  String
+
+  sessionId String
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  revokedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  @@index([sessionId])
+  @@index([familyId])
+}
+
+model AuditLog {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  action    AuditAction
+  ipAddress String?
+  userAgent String?
+  metadata  Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
 }
