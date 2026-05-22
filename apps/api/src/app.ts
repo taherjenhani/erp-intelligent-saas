@@ -1,20 +1,36 @@
 import Fastify from "fastify";
+
 import jwtPlugin from "./plugins/jwt";
 
+import {
+  authRoutes,
+} from "./modules/auth/auth.route";
+
 export function buildApp() {
-  const app = Fastify({
-    logger: true,
-  });
+  const app =
+    Fastify({
+      logger: true,
+    });
 
-  app.register(jwtPlugin);
+  app.register(
+    jwtPlugin
+  );
 
-  app.get("/", async () => ({
-    message: "ERP API running 🚀",
-  }));
+  app.register(
+    authRoutes,
+    {
+      prefix:
+        "/api/auth",
+    }
+  );
 
-  app.get("/__ping__", async () => ({
-    ok: true,
-  }));
+  app.get(
+    "/",
+    async () => ({
+      message:
+        "ERP API running 🚀",
+    })
+  );
 
   return app;
 }
