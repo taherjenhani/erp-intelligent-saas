@@ -1,28 +1,83 @@
-import { FastifyReply, FastifyRequest } from "fastify";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
+import { env } from "../../config/env";
+import { AuthError } from "../../lib/errors";
 import {
+  clearRefreshCookie,
+  setRefreshCookie,
+  toAuthResponse,
+} from "../../utils/authTokens";
+import {
+  changePasswordSchema,
   loginSchema,
   registerSchema,
+  requestPasswordResetSchema,
+  resetPasswordSchema,
+  verifyEmailSchema,
 } from "./auth.schema";
-
 import {
+  changePassword,
   loginUser,
-  registerUser,refreshSession,logoutUser,
+  logoutUser,
+  refreshSession,
+  registerUser,
+  requestPasswordReset,
+  resetPassword,
+  verifyEmail,
 } from "./auth.service";
 
+function getRequestContext(request: FastifyRequest) {
+  return {
+    ipAddress: request.ip,
+    userAgent: request.headers["user-agent"],
+  };
+}
+
+function sendAuthResult(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  result: Awaited<ReturnType<typeof loginUser>>,
+  message: string
+) {
+  const authResponse = toAuthResponse(
+    request,
+    result.user,
+    result.session,
+    result.refreshToken
+  );
+
+  setRefreshCookie(reply, authResponse.refreshToken);
+
+  return reply.status(200).send({
+    success: true,
+    message,
+    data: {
+      accessToken: authResponse.accessToken,
+      user: authResponse.user,
+    },
+  });
+}
 
 export async function registerController(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
   const data = registerSchema.parse(request.body);
-
-  const user = await registerUser(data);
+  const result = await registerUser(
+    data,
+    getRequestContext(request)
+  );
 
   return reply.status(201).send({
     success: true,
     message: "User created successfully",
-    data: user,
+    data: {
+      user: result.user,
+      emailVerificationToken:
+        env.NODE_ENV === "production"
+          ? undefined
+          : result.emailVerificationToken,
+    },
   });
 }
 
@@ -31,91 +86,45 @@ export async function loginController(
   reply: FastifyReply
 ) {
   const body = loginSchema.parse(request.body);
-
   const result = await loginUser(
-    body.email,
-    body.password
+    body,
+    getRequestContext(request)
   );
 
-const accessToken = request.server.jwt.sign(
-  {
-    email: result.user.email,
-    role: result.user.role,
-    sessionId: result.session.id,
-    storeIds: result.user.storeIds,
-  },
-  {
-    sub: result.user.id,
-    expiresIn: "15m",
-  }
-);
-  reply.setCookie(
-    "refreshToken",
-    result.refreshToken,
-    {
-      httpOnly: true,
-      secure: false,
-      sameSite: "strict",
-      path: "/api/auth",
-      maxAge: 7 * 24 * 60 * 60,
-    }
+  return sendAuthResult(
+    request,
+    reply,
+    result,
+    "Login successful"
   );
-
-  return reply.status(200).send({
-    success: true,
-    message: "Login successful",
-    data: {
-      accessToken,
-      user: result.user,
-    },
-  });
 }
+
 export async function refreshController(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
-  const refreshToken =
-    request.cookies.refreshToken;
+  const refreshToken = request.cookies.refreshToken;
 
   if (!refreshToken) {
-    return reply.status(401).send({
-      success: false,
-      message: "Refresh token missing",
-    });
+    throw new AuthError(
+      "AUTH_REFRESH_TOKEN_MISSING",
+      "Refresh token missing"
+    );
   }
 
-  const result = await refreshSession(refreshToken);
-
-  const accessToken = request.server.jwt.sign(
-    {
-      email: result.user.email,
-      role: result.user.role,
-      sessionId: result.session.id,
-      storeIds: result.user.storeIds,
-    },
-    {
-      sub: result.user.id,
-      expiresIn: "15m",
-    }
+  const result = await refreshSession(
+    refreshToken,
+    getRequestContext(request)
   );
 
-  reply.setCookie("refreshToken", result.refreshToken, {
-    httpOnly: true,
-    secure: false,
-    sameSite: "strict",
-    path: "/api/auth",
-    maxAge: 7 * 24 * 60 * 60,
-  });
-
-  return reply.status(200).send({
-    success: true,
-    message: "Token refreshed successfully",
-    data: {
-      accessToken,
-      user: result.user,
-    },
-  });
+  return sendAuthResult(
+    request,
+    reply,
+    result,
+    "Token refreshed successfully"
+  );
 }
+
 export async function logoutController(
   request: FastifyRequest,
   reply: FastifyReply
@@ -123,18 +132,17 @@ export async function logoutController(
   const refreshToken = request.cookies.refreshToken;
 
   if (refreshToken) {
-    await logoutUser(refreshToken);
+    await logoutUser(refreshToken, getRequestContext(request));
   }
 
-  reply.clearCookie("refreshToken", {
-    path: "/api/auth",
-  });
+  clearRefreshCookie(reply);
 
   return reply.status(200).send({
     success: true,
     message: "Logout successful",
   });
 }
+
 export async function meController(
   request: FastifyRequest,
   reply: FastifyReply
@@ -142,5 +150,81 @@ export async function meController(
   return reply.status(200).send({
     success: true,
     data: request.auth,
+  });
+}
+
+export async function csrfTokenController(
+  _request: FastifyRequest,
+  reply: FastifyReply
+) {
+  return reply.status(200).send({
+    success: true,
+    data: {
+      csrfToken: reply.generateCsrf(),
+    },
+  });
+}
+
+export async function verifyEmailController(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  const body = verifyEmailSchema.parse(request.body);
+
+  await verifyEmail(body);
+
+  return reply.status(200).send({
+    success: true,
+    message: "Email verified successfully",
+  });
+}
+
+export async function requestPasswordResetController(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  const body = requestPasswordResetSchema.parse(request.body);
+  const result = await requestPasswordReset(body);
+
+  return reply.status(200).send({
+    success: true,
+    message:
+      "If an active account exists, a reset link has been prepared",
+    data:
+      env.NODE_ENV === "production"
+        ? undefined
+        : { resetToken: result.resetToken },
+  });
+}
+
+export async function resetPasswordController(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  const body = resetPasswordSchema.parse(request.body);
+
+  await resetPassword(body);
+
+  return reply.status(200).send({
+    success: true,
+    message: "Password reset successfully",
+  });
+}
+
+export async function changePasswordController(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  if (!request.auth) {
+    throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
+  }
+
+  const body = changePasswordSchema.parse(request.body);
+
+  await changePassword(request.auth.userId, body);
+
+  return reply.status(200).send({
+    success: true,
+    message: "Password changed successfully",
   });
 }

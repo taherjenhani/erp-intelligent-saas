@@ -1,10 +1,10 @@
-import { FastifyReply, FastifyRequest } from "fastify";
-import { prisma } from "../lib/prisma";
-import type { Role, SessionStatus } from "@prisma/client";
+import type { Role } from "@prisma/client";
+import type { FastifyReply, FastifyRequest } from "fastify";
 
-/**
- * Contexte ajouté à `request.auth` lorsqu’un utilisateur est authentifié.
- */
+import { writeAuditLog } from "../lib/audit";
+import { AuthError } from "../lib/errors";
+import { prisma } from "../lib/prisma";
+
 export type AuthContext = {
   userId: string;
   email: string;
@@ -13,61 +13,42 @@ export type AuthContext = {
   storeIds: string[];
 };
 
-/**
- * Middleware de protection des routes.
- * - Vérifie la validité du JWT d’accès (signature, expiration).
- * - Charge la session en base et s’assure qu’elle est ACTIVE et non expirée.
- * - Injecte dans `request.auth` les informations utilisateur.
- */
 export async function requireAuth(
   request: FastifyRequest,
-  reply: FastifyReply
+  _reply: FastifyReply
 ) {
   try {
-    // Vérifie et décode le JWT d’accès
     const payload = await request.jwtVerify<{
       sub: string;
       email: string;
       role: Role;
       sessionId: string;
-      storeIds: string[];
+      storeIds?: string[];
     }>();
 
-    // On récupère la session correspondante dans la BD
     const session = await prisma.session.findUnique({
       where: { id: payload.sessionId },
       select: {
         status: true,
         expiresAt: true,
-        id: true,
       },
     });
 
-    // On vérifie que la session existe
     if (!session) {
-      return reply.status(401).send({
-        success: false,
-        message: "Session introuvable",
-      });
+      throw new AuthError(
+        "AUTH_SESSION_NOT_FOUND",
+        "Session not found"
+      );
     }
 
-    // On vérifie que la session est ACTIVE
     if (session.status !== "ACTIVE") {
-      return reply.status(401).send({
-        success: false,
-        message: "Session révoquée",
-      });
+      throw new AuthError("AUTH_SESSION_REVOKED", "Session revoked");
     }
 
-    // On vérifie l’expiration de session
-    if (session.expiresAt && session.expiresAt < new Date()) {
-      return reply.status(401).send({
-        success: false,
-        message: "Session expirée",
-      });
+    if (session.expiresAt <= new Date()) {
+      throw new AuthError("AUTH_SESSION_EXPIRED", "Session expired");
     }
 
-    // Si tout va bien, on expose les infos auth sur la requête
     request.auth = {
       userId: payload.sub,
       email: payload.email,
@@ -75,11 +56,20 @@ export async function requireAuth(
       sessionId: payload.sessionId,
       storeIds: payload.storeIds ?? [],
     };
-  } catch {
-    // JWT invalide ou manquant
-    return reply.status(401).send({
-      success: false,
-      message: "Unauthorized",
+  } catch (error) {
+    await writeAuditLog({
+      action: "ACCESS_DENIED",
+      ipAddress: request.ip,
+      userAgent: request.headers["user-agent"],
+      metadata: {
+        path: request.url,
+      },
     });
+
+    if (error instanceof AuthError) {
+      throw error;
+    }
+
+    throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
   }
 }

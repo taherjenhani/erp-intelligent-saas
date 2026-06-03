@@ -1,20 +1,65 @@
-// src/modules/auth/auth.route.ts
-import { FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
+
+import { env } from "../../config/env";
+import { requireAuth } from "../../middlewares/auth.middleware";
 import {
-  registerController,
+  changePasswordController,
+  csrfTokenController,
   loginController,
-  refreshController,
   logoutController,
   meController,
+  refreshController,
+  registerController,
+  requestPasswordResetController,
+  resetPasswordController,
+  verifyEmailController,
 } from "./auth.controller";
-import { requireAuth } from "../../middlewares/auth.middleware";
 
 export async function authRoutes(app: FastifyInstance) {
-  app.post("/register", registerController);
-  app.post("/login", loginController);
-  app.post("/refresh", refreshController);
-  app.post("/logout", logoutController);
+  const csrf = app.csrfProtection;
 
-  // Route protégée : nécessite un JWT d’accès valide + session ACTIVE
+  app.get("/csrf-token", csrfTokenController);
+  app.post("/register", registerController);
+  app.post("/verify-email", verifyEmailController);
+  app.post("/forgot-password", requestPasswordResetController);
+  app.post("/reset-password", resetPasswordController);
+
+  app.post(
+    "/login",
+    {
+      preHandler: app.rateLimit({
+        max: env.LOGIN_RATE_LIMIT_MAX,
+        timeWindow: env.LOGIN_RATE_LIMIT_WINDOW,
+      }),
+    },
+    loginController
+  );
+
+  app.post(
+    "/refresh",
+    {
+      preValidation: csrf,
+    },
+    refreshController
+  );
+
+  app.post(
+    "/logout",
+    {
+      preHandler: requireAuth,
+      preValidation: csrf,
+    },
+    logoutController
+  );
+
+  app.post(
+    "/change-password",
+    {
+      preHandler: requireAuth,
+      preValidation: csrf,
+    },
+    changePasswordController
+  );
+
   app.get("/me", { preHandler: requireAuth }, meController);
 }

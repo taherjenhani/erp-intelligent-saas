@@ -14,7 +14,10 @@ export const registerSchema = z.object({
   lastName: z.string().trim().min(2).max(50),
   email: z.string().trim().email().toLowerCase(),
   password: passwordSchema,
-  storeId: z.string().cuid().optional(),
+  storeId: z
+    .string()
+    .cuid("Store id must be a valid cuid")
+    .optional(),
 });
 
 export const loginSchema = z.object({
@@ -22,5 +25,37 @@ export const loginSchema = z.object({
   password: z.string().min(1).max(72),
 });
 
+export const verifyEmailSchema = z.object({
+  token: z.string().min(64),
+});
+
+export const requestPasswordResetSchema = z.object({
+  email: z.string().trim().email().toLowerCase(),
+});
+
+export const resetPasswordSchema = z.object({
+  token: z.string().min(64),
+  password: passwordSchema,
+});
+
+export const changePasswordSchema = z
+  .object({
+    currentPassword: z.string().min(1).max(72),
+    newPassword: passwordSchema,
+  })
+  .refine(
+    (data) => data.currentPassword !== data.newPassword,
+    {
+      message: "New password must be different",
+      path: ["newPassword"],
+    }
+  );
+
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
+export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
+export type RequestPasswordResetInput = z.infer<
+  typeof requestPasswordResetSchema
+>;
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;

@@ -1,18 +1,152 @@
+import type {
+  AuditAction,
+  AuthTokenPurpose,
+  Prisma,
+} from "@prisma/client";
+
+import { writeAuditLog } from "../../lib/audit";
+import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
-import type { RegisterInput } from "./auth.schema";
-import { hashPassword, verifyPassword } from "../../utils/hash";
 import {
-  generateFamilyId,
-  generateRandomToken,
-  hashToken,verifyToken,
-} from "../../utils/token";
+  createRefreshTokenRecord,
+  REFRESH_TOKEN_MAX_AGE_MS,
+} from "../../utils/authTokens";
+import { hashPassword, verifyPassword } from "../../utils/hash";
+import { generateRandomToken, hashToken } from "../../utils/token";
+import type {
+  ChangePasswordInput,
+  LoginInput,
+  RegisterInput,
+  RequestPasswordResetInput,
+  ResetPasswordInput,
+  VerifyEmailInput,
+} from "./auth.schema";
 
+type AuthContextInput = {
+  ipAddress?: string | null;
+  userAgent?: string | null;
+};
 
-const SESSION_DURATION_DAYS = 7;
-const SESSION_DURATION_MS =
-  SESSION_DURATION_DAYS * 24 * 60 * 60 * 1000;
+const AUTH_TOKEN_DURATION_MS = 30 * 60 * 1000;
 
-export async function registerUser(data: RegisterInput) {
+function getSessionExpiry() {
+  return new Date(Date.now() + REFRESH_TOKEN_MAX_AGE_MS);
+}
+
+function toPublicUser(user: {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  role: "SUPER_ADMIN" | "ADMIN" | "MANAGER" | "EMPLOYEE";
+  emailVerifiedAt?: Date | null;
+  storeAccesses: { storeId: string }[];
+}) {
+  return {
+    id: user.id,
+    firstName: user.firstName,
+    lastName: user.lastName,
+    email: user.email,
+    role: user.role,
+    emailVerified: Boolean(user.emailVerifiedAt),
+    storeIds: user.storeAccesses.map((access) => access.storeId),
+  };
+}
+
+async function writeAuthAudit(
+  action: AuditAction,
+  context: AuthContextInput,
+  userId?: string | null,
+  metadata?: Prisma.InputJsonObject
+) {
+  await writeAuditLog({
+    action,
+    userId,
+    ipAddress: context.ipAddress,
+    userAgent: context.userAgent,
+    metadata,
+  });
+}
+
+async function createAuthToken(
+  userId: string,
+  purpose: AuthTokenPurpose
+) {
+  const token = generateRandomToken();
+
+  await prisma.authToken.create({
+    data: {
+      tokenHash: await hashToken(token),
+      purpose,
+      userId,
+      expiresAt: new Date(Date.now() + AUTH_TOKEN_DURATION_MS),
+    },
+  });
+
+  return token;
+}
+
+async function consumeAuthToken(
+  token: string,
+  purpose: AuthTokenPurpose,
+  errorCode:
+    | "AUTH_INVALID_RESET_TOKEN"
+    | "AUTH_INVALID_VERIFICATION_TOKEN"
+) {
+  const tokenHash = await hashToken(token);
+  const authToken = await prisma.authToken.findUnique({
+    where: {
+      tokenHash,
+    },
+  });
+
+  if (
+    !authToken ||
+    authToken.purpose !== purpose ||
+    authToken.usedAt ||
+    authToken.expiresAt <= new Date()
+  ) {
+    throw new AuthError(errorCode, "Invalid or expired token");
+  }
+
+  await prisma.authToken.update({
+    where: {
+      id: authToken.id,
+    },
+    data: {
+      usedAt: new Date(),
+    },
+  });
+
+  return authToken;
+}
+
+async function revokeTokenFamily(familyId: string, sessionId: string) {
+  await prisma.$transaction([
+    prisma.refreshToken.updateMany({
+      where: {
+        familyId,
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    }),
+    prisma.session.update({
+      where: {
+        id: sessionId,
+      },
+      data: {
+        status: "REVOKED",
+      },
+    }),
+  ]);
+}
+
+export async function registerUser(
+  data: RegisterInput,
+  context: AuthContextInput = {}
+) {
   const email = data.email.trim().toLowerCase();
 
   const existingUser = await prisma.user.findUnique({
@@ -20,33 +154,70 @@ export async function registerUser(data: RegisterInput) {
   });
 
   if (existingUser) {
-    throw new Error("AUTH_EMAIL_ALREADY_EXISTS");
+    throw new AuthError(
+      "AUTH_EMAIL_ALREADY_EXISTS",
+      "Email already exists",
+      409
+    );
+  }
+
+  if (data.storeId) {
+    const store = await prisma.store.findUnique({
+      where: { id: data.storeId },
+      select: { id: true },
+    });
+
+    if (!store) {
+      throw new AuthError(
+        "VALIDATION_FAILED",
+        "Store does not exist",
+        400
+      );
+    }
   }
 
   const hashedPassword = await hashPassword(data.password);
 
-  return prisma.user.create({
+  const user = await prisma.user.create({
     data: {
       firstName: data.firstName.trim(),
       lastName: data.lastName.trim(),
       email,
       password: hashedPassword,
       role: "EMPLOYEE",
+      storeAccesses: data.storeId
+        ? {
+            create: {
+              storeId: data.storeId,
+            },
+          }
+        : undefined,
     },
-    select: {
-      id: true,
-      firstName: true,
-      lastName: true,
-      email: true,
-      role: true,
-      isActive: true,
-      createdAt: true,
+    include: {
+      storeAccesses: {
+        select: { storeId: true },
+      },
     },
   });
+
+  const emailVerificationToken = await createAuthToken(
+    user.id,
+    "EMAIL_VERIFICATION"
+  );
+
+  await writeAuthAudit("REGISTER", context, user.id);
+
+  return {
+    user: toPublicUser(user),
+    emailVerificationToken,
+  };
 }
 
-export async function loginUser(email: string, password: string) {
-  const normalizedEmail = email.trim().toLowerCase();
+export async function loginUser(
+  data: LoginInput,
+  context: AuthContextInput = {}
+) {
+  const normalizedEmail = data.email.trim().toLowerCase();
 
   const user = await prisma.user.findUnique({
     where: { email: normalizedEmail },
@@ -58,62 +229,71 @@ export async function loginUser(email: string, password: string) {
   });
 
   if (!user) {
-    throw new Error("AUTH_INVALID_CREDENTIALS");
+    await writeAuthAudit("LOGIN_FAILED", context, null, {
+      email: normalizedEmail,
+    });
+    throw new AuthError(
+      "AUTH_INVALID_CREDENTIALS",
+      "Invalid email or password"
+    );
   }
 
   if (!user.isActive) {
-    throw new Error("AUTH_ACCOUNT_DISABLED");
+    await writeAuthAudit("LOGIN_FAILED", context, user.id, {
+      reason: "account_disabled",
+    });
+    throw new AuthError(
+      "AUTH_ACCOUNT_DISABLED",
+      "Account is disabled",
+      403
+    );
   }
 
   const isPasswordValid = await verifyPassword(
-    password,
+    data.password,
     user.password
   );
 
   if (!isPasswordValid) {
-    throw new Error("AUTH_INVALID_CREDENTIALS");
+    await writeAuthAudit("LOGIN_FAILED", context, user.id, {
+      reason: "invalid_password",
+    });
+    throw new AuthError(
+      "AUTH_INVALID_CREDENTIALS",
+      "Invalid email or password"
+    );
   }
 
+  const refreshToken = await createRefreshTokenRecord();
   const session = await prisma.session.create({
     data: {
       userId: user.id,
-      expiresAt: new Date(Date.now() + SESSION_DURATION_MS),
+      userAgent: context.userAgent,
+      ipAddress: context.ipAddress,
+      expiresAt: refreshToken.record.expiresAt,
+      refreshTokens: {
+        create: refreshToken.record,
+      },
     },
   });
 
-  const refreshToken = generateRandomToken();
-  const familyId = generateFamilyId();
-  const refreshTokenHash = await hashToken(refreshToken);
-
-  await prisma.refreshToken.create({
-    data: {
-      tokenHash: refreshTokenHash,
-      familyId,
-      sessionId: session.id,
-      expiresAt: new Date(Date.now() + SESSION_DURATION_MS),
-    },
-  });
+  await writeAuthAudit("LOGIN_SUCCESS", context, user.id);
 
   return {
-    refreshToken,
+    refreshToken: refreshToken.refreshToken,
     session,
-    user: {
-      id: user.id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      role: user.role,
-      storeIds: user.storeAccesses.map((access) => access.storeId),
-    },
+    user: toPublicUser(user),
   };
 }
-export async function refreshSession(refreshToken: string) {
-  const tokens = await prisma.refreshToken.findMany({
+
+export async function refreshSession(
+  refreshToken: string,
+  context: AuthContextInput = {}
+) {
+  const refreshTokenHash = await hashToken(refreshToken);
+  const matchedToken = await prisma.refreshToken.findUnique({
     where: {
-      revokedAt: null,
-      expiresAt: {
-        gt: new Date(),
-      },
+      tokenHash: refreshTokenHash,
     },
     include: {
       session: {
@@ -132,111 +312,246 @@ export async function refreshSession(refreshToken: string) {
     },
   });
 
-  let matchedToken = null;
-
-  for (const token of tokens) {
-    const isValid = await verifyToken(
-      refreshToken,
-      token.tokenHash
+  if (!matchedToken) {
+    throw new AuthError(
+      "AUTH_INVALID_REFRESH_TOKEN",
+      "Invalid refresh token"
     );
-
-    if (isValid) {
-      matchedToken = token;
-      break;
-    }
   }
 
-  if (!matchedToken) {
-    throw new Error("AUTH_INVALID_REFRESH_TOKEN");
+  if (matchedToken.revokedAt) {
+    await revokeTokenFamily(
+      matchedToken.familyId,
+      matchedToken.sessionId
+    );
+    await writeAuthAudit(
+      "TOKEN_REUSE_DETECTED",
+      context,
+      matchedToken.session.userId,
+      { sessionId: matchedToken.sessionId }
+    );
+    throw new AuthError(
+      "AUTH_REFRESH_TOKEN_REUSED",
+      "Refresh token reuse detected"
+    );
+  }
+
+  const now = new Date();
+
+  if (
+    matchedToken.expiresAt <= now ||
+    matchedToken.session.expiresAt <= now
+  ) {
+    await revokeTokenFamily(
+      matchedToken.familyId,
+      matchedToken.sessionId
+    );
+    throw new AuthError("AUTH_SESSION_EXPIRED", "Session expired");
   }
 
   if (matchedToken.session.status !== "ACTIVE") {
-    throw new Error("AUTH_SESSION_REVOKED");
+    throw new AuthError("AUTH_SESSION_REVOKED", "Session revoked");
   }
 
   if (!matchedToken.session.user.isActive) {
-    throw new Error("AUTH_ACCOUNT_DISABLED");
+    throw new AuthError(
+      "AUTH_ACCOUNT_DISABLED",
+      "Account is disabled",
+      403
+    );
   }
 
-  await prisma.refreshToken.update({
-    where: {
-      id: matchedToken.id,
-    },
-    data: {
-      revokedAt: new Date(),
-    },
-  });
+  const newRefreshToken = await createRefreshTokenRecord(
+    matchedToken.familyId
+  );
 
-  const newRefreshToken = generateRandomToken();
-  const newRefreshTokenHash = await hashToken(newRefreshToken);
+  const [, session] = await prisma.$transaction([
+    prisma.refreshToken.update({
+      where: {
+        id: matchedToken.id,
+      },
+      data: {
+        revokedAt: now,
+      },
+    }),
+    prisma.session.update({
+      where: {
+        id: matchedToken.sessionId,
+      },
+      data: {
+        expiresAt: newRefreshToken.record.expiresAt,
+        refreshTokens: {
+          create: newRefreshToken.record,
+        },
+      },
+    }),
+  ]);
 
-  await prisma.refreshToken.create({
-    data: {
-      tokenHash: newRefreshTokenHash,
-      familyId: matchedToken.familyId,
-      sessionId: matchedToken.sessionId,
-      expiresAt: new Date(Date.now() + SESSION_DURATION_MS),
-    },
-  });
+  await writeAuthAudit(
+    "REFRESH_TOKEN",
+    context,
+    matchedToken.session.userId
+  );
 
   return {
-    refreshToken: newRefreshToken,
-    session: matchedToken.session,
-    user: {
-      id: matchedToken.session.user.id,
-      firstName: matchedToken.session.user.firstName,
-      lastName: matchedToken.session.user.lastName,
-      email: matchedToken.session.user.email,
-      role: matchedToken.session.user.role,
-      storeIds: matchedToken.session.user.storeAccesses.map(
-        (access) => access.storeId
-      ),
-    },
+    refreshToken: newRefreshToken.refreshToken,
+    session,
+    user: toPublicUser(matchedToken.session.user),
   };
 }
-export async function logoutUser(refreshToken: string) {
-  const tokens = await prisma.refreshToken.findMany({
+
+export async function logoutUser(
+  refreshToken: string,
+  context: AuthContextInput = {}
+) {
+  const refreshTokenHash = await hashToken(refreshToken);
+  const matchedToken = await prisma.refreshToken.findUnique({
     where: {
-      revokedAt: null,
+      tokenHash: refreshTokenHash,
     },
     include: {
-      session: true,
+      session: {
+        select: {
+          userId: true,
+        },
+      },
     },
   });
-
-  let matchedToken = null;
-
-  for (const token of tokens) {
-    const isValid = await verifyToken(
-      refreshToken,
-      token.tokenHash
-    );
-
-    if (isValid) {
-      matchedToken = token;
-      break;
-    }
-  }
 
   if (!matchedToken) {
     return;
   }
 
-  await prisma.refreshToken.update({
+  await prisma.$transaction([
+    prisma.refreshToken.update({
+      where: {
+        id: matchedToken.id,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    }),
+    prisma.session.update({
+      where: {
+        id: matchedToken.sessionId,
+      },
+      data: {
+        status: "REVOKED",
+      },
+    }),
+  ]);
+
+  await writeAuthAudit(
+    "LOGOUT",
+    context,
+    matchedToken.session.userId
+  );
+}
+
+export async function verifyEmail(data: VerifyEmailInput) {
+  const authToken = await consumeAuthToken(
+    data.token,
+    "EMAIL_VERIFICATION",
+    "AUTH_INVALID_VERIFICATION_TOKEN"
+  );
+
+  await prisma.user.update({
     where: {
-      id: matchedToken.id,
+      id: authToken.userId,
     },
     data: {
-      revokedAt: new Date(),
+      emailVerifiedAt: new Date(),
+    },
+  });
+}
+
+export async function requestPasswordReset(
+  data: RequestPasswordResetInput
+) {
+  const user = await prisma.user.findUnique({
+    where: {
+      email: data.email.trim().toLowerCase(),
+    },
+    select: {
+      id: true,
+      isActive: true,
     },
   });
 
-  await prisma.session.update({
+  if (!user || !user.isActive) {
+    return {
+      resetToken: null,
+    };
+  }
+
+  return {
+    resetToken: await createAuthToken(user.id, "PASSWORD_RESET"),
+  };
+}
+
+export async function resetPassword(data: ResetPasswordInput) {
+  const authToken = await consumeAuthToken(
+    data.token,
+    "PASSWORD_RESET",
+    "AUTH_INVALID_RESET_TOKEN"
+  );
+
+  await prisma.user.update({
     where: {
-      id: matchedToken.sessionId,
+      id: authToken.userId,
     },
     data: {
-      status: "REVOKED",
+      password: await hashPassword(data.password),
+      sessions: {
+        updateMany: {
+          where: {
+            status: "ACTIVE",
+          },
+          data: {
+            status: "REVOKED",
+          },
+        },
+      },
+    },
+  });
+}
+
+export async function changePassword(
+  userId: string,
+  data: ChangePasswordInput
+) {
+  const user = await prisma.user.findUnique({
+    where: {
+      id: userId,
+    },
+    select: {
+      id: true,
+      password: true,
+    },
+  });
+
+  if (!user) {
+    throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
+  }
+
+  const isPasswordValid = await verifyPassword(
+    data.currentPassword,
+    user.password
+  );
+
+  if (!isPasswordValid) {
+    throw new AuthError(
+      "AUTH_INVALID_CREDENTIALS",
+      "Current password is invalid"
+    );
+  }
+
+  await prisma.user.update({
+    where: {
+      id: user.id,
+    },
+    data: {
+      password: await hashPassword(data.newPassword),
     },
   });
 }

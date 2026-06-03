@@ -29,6 +29,11 @@ enum AuditAction {
   ACCESS_DENIED
 }
 
+enum AuthTokenPurpose {
+  EMAIL_VERIFICATION
+  PASSWORD_RESET
+}
+
 model User {
   id        String  @id @default(cuid())
   firstName String
@@ -41,9 +46,11 @@ model User {
   sessions      Session[]
   storeAccesses UserStoreAccess[]
   auditLogs     AuditLog[]
+  authTokens    AuthToken[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  emailVerifiedAt DateTime?
 
   @@index([email])
   @@index([role])
@@ -161,6 +168,25 @@ model RefreshToken {
 
   @@index([sessionId])
   @@index([familyId])
+  @@index([revokedAt, expiresAt])
+}
+
+model AuthToken {
+  id String @id @default(cuid())
+
+  tokenHash String @unique
+  purpose   AuthTokenPurpose
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  usedAt    DateTime?
+  expiresAt DateTime
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([purpose])
+  @@index([expiresAt])
 }
 
 model AuditLog {
