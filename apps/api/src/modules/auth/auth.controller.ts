@@ -74,9 +74,9 @@ export async function registerController(
     data: {
       user: result.user,
       emailVerificationToken:
-        env.NODE_ENV === "production"
-          ? undefined
-          : result.emailVerificationToken,
+        env.EXPOSE_AUTH_TOKENS
+          ? result.emailVerificationToken
+          : undefined,
     },
   });
 }
@@ -191,9 +191,9 @@ export async function requestPasswordResetController(
     message:
       "If an active account exists, a reset link has been prepared",
     data:
-      env.NODE_ENV === "production"
-        ? undefined
-        : { resetToken: result.resetToken },
+      env.EXPOSE_AUTH_TOKENS
+        ? { resetToken: result.resetToken }
+        : undefined,
   });
 }
 

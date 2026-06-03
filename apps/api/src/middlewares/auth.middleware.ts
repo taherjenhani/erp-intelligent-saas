@@ -20,17 +20,21 @@ export async function requireAuth(
   try {
     const payload = await request.jwtVerify<{
       sub: string;
-      email: string;
-      role: Role;
       sessionId: string;
-      storeIds?: string[];
     }>();
 
     const session = await prisma.session.findUnique({
       where: { id: payload.sessionId },
-      select: {
-        status: true,
-        expiresAt: true,
+      include: {
+        user: {
+          include: {
+            storeAccesses: {
+              select: {
+                storeId: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -49,12 +53,26 @@ export async function requireAuth(
       throw new AuthError("AUTH_SESSION_EXPIRED", "Session expired");
     }
 
+    if (session.userId !== payload.sub) {
+      throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
+    }
+
+    if (!session.user.isActive) {
+      throw new AuthError(
+        "AUTH_ACCOUNT_DISABLED",
+        "Account is disabled",
+        403
+      );
+    }
+
     request.auth = {
-      userId: payload.sub,
-      email: payload.email,
-      role: payload.role,
-      sessionId: payload.sessionId,
-      storeIds: payload.storeIds ?? [],
+      userId: session.user.id,
+      email: session.user.email,
+      role: session.user.role,
+      sessionId: session.id,
+      storeIds: session.user.storeAccesses.map(
+        (access) => access.storeId
+      ),
     };
   } catch (error) {
     await writeAuditLog({

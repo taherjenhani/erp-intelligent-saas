@@ -34,6 +34,12 @@ enum AuthTokenPurpose {
   PASSWORD_RESET
 }
 
+enum EmailStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
 model User {
   id        String  @id @default(cuid())
   firstName String
@@ -204,5 +210,26 @@ model AuditLog {
 
   @@index([userId])
   @@index([action])
+  @@index([createdAt])
+}
+
+model EmailOutbox {
+  id String @id @default(cuid())
+
+  to      String
+  subject String
+  text    String
+  html    String
+
+  status        EmailStatus @default(PENDING)
+  attempts      Int         @default(0)
+  lastError     String?
+  nextAttemptAt DateTime    @default(now())
+  sentAt        DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, nextAttemptAt])
   @@index([createdAt])
 }

@@ -21,7 +21,7 @@ export async function writeAuditLog(input: AuditInput) {
         metadata: input.metadata,
       },
     });
-  } catch {
-    // Audit logging must never break the user-facing auth flow.
+  } catch (error) {
+    console.error("Audit log failed", error);
   }
 }

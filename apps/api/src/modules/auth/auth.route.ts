@@ -17,12 +17,41 @@ import {
 
 export async function authRoutes(app: FastifyInstance) {
   const csrf = app.csrfProtection;
+  const authRateLimit = () => app.rateLimit({
+    max: env.AUTH_RATE_LIMIT_MAX,
+    timeWindow: env.AUTH_RATE_LIMIT_WINDOW,
+  });
 
   app.get("/csrf-token", csrfTokenController);
-  app.post("/register", registerController);
-  app.post("/verify-email", verifyEmailController);
-  app.post("/forgot-password", requestPasswordResetController);
-  app.post("/reset-password", resetPasswordController);
+  app.post(
+    "/register",
+    { preValidation: csrf },
+    registerController
+  );
+  app.post(
+    "/verify-email",
+    {
+      preHandler: authRateLimit(),
+      preValidation: csrf,
+    },
+    verifyEmailController
+  );
+  app.post(
+    "/forgot-password",
+    {
+      preHandler: authRateLimit(),
+      preValidation: csrf,
+    },
+    requestPasswordResetController
+  );
+  app.post(
+    "/reset-password",
+    {
+      preHandler: authRateLimit(),
+      preValidation: csrf,
+    },
+    resetPasswordController
+  );
 
   app.post(
     "/login",
@@ -31,6 +60,7 @@ export async function authRoutes(app: FastifyInstance) {
         max: env.LOGIN_RATE_LIMIT_MAX,
         timeWindow: env.LOGIN_RATE_LIMIT_WINDOW,
       }),
+      preValidation: csrf,
     },
     loginController
   );

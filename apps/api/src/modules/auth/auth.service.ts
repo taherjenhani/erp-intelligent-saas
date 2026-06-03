@@ -5,6 +5,10 @@ import type {
 } from "@prisma/client";
 
 import { writeAuditLog } from "../../lib/audit";
+import {
+  sendEmailVerification,
+  sendPasswordReset,
+} from "../../lib/email";
 import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
 import {
@@ -205,6 +209,8 @@ export async function registerUser(
     "EMAIL_VERIFICATION"
   );
 
+  await sendEmailVerification(user.email, emailVerificationToken);
+
   await writeAuthAudit("REGISTER", context, user.id);
 
   return {
@@ -261,6 +267,17 @@ export async function loginUser(
     throw new AuthError(
       "AUTH_INVALID_CREDENTIALS",
       "Invalid email or password"
+    );
+  }
+
+  if (!user.emailVerifiedAt) {
+    await writeAuthAudit("LOGIN_FAILED", context, user.id, {
+      reason: "email_not_verified",
+    });
+    throw new AuthError(
+      "AUTH_EMAIL_NOT_VERIFIED",
+      "Email address is not verified",
+      403
     );
   }
 
@@ -365,16 +382,22 @@ export async function refreshSession(
     matchedToken.familyId
   );
 
-  const [, session] = await prisma.$transaction([
-    prisma.refreshToken.update({
+  const session = await prisma.$transaction(async (tx) => {
+    const updatedToken = await tx.refreshToken.updateMany({
       where: {
         id: matchedToken.id,
+        revokedAt: null,
       },
       data: {
         revokedAt: now,
       },
-    }),
-    prisma.session.update({
+    });
+
+    if (updatedToken.count !== 1) {
+      return null;
+    }
+
+    return tx.session.update({
       where: {
         id: matchedToken.sessionId,
       },
@@ -384,8 +407,25 @@ export async function refreshSession(
           create: newRefreshToken.record,
         },
       },
-    }),
-  ]);
+    });
+  });
+
+  if (!session) {
+    await revokeTokenFamily(
+      matchedToken.familyId,
+      matchedToken.sessionId
+    );
+    await writeAuthAudit(
+      "TOKEN_REUSE_DETECTED",
+      context,
+      matchedToken.session.userId,
+      { sessionId: matchedToken.sessionId }
+    );
+    throw new AuthError(
+      "AUTH_REFRESH_TOKEN_REUSED",
+      "Refresh token reuse detected"
+    );
+  }
 
   await writeAuthAudit(
     "REFRESH_TOKEN",
@@ -484,8 +524,15 @@ export async function requestPasswordReset(
     };
   }
 
+  const resetToken = await createAuthToken(
+    user.id,
+    "PASSWORD_RESET"
+  );
+
+  await sendPasswordReset(data.email, resetToken);
+
   return {
-    resetToken: await createAuthToken(user.id, "PASSWORD_RESET"),
+    resetToken,
   };
 }
 
@@ -496,23 +543,39 @@ export async function resetPassword(data: ResetPasswordInput) {
     "AUTH_INVALID_RESET_TOKEN"
   );
 
-  await prisma.user.update({
-    where: {
-      id: authToken.userId,
-    },
-    data: {
-      password: await hashPassword(data.password),
-      sessions: {
-        updateMany: {
-          where: {
-            status: "ACTIVE",
-          },
-          data: {
-            status: "REVOKED",
+  const password = await hashPassword(data.password);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: {
+        id: authToken.userId,
+      },
+      data: {
+        password,
+        sessions: {
+          updateMany: {
+            where: {
+              status: "ACTIVE",
+            },
+            data: {
+              status: "REVOKED",
+            },
           },
         },
       },
-    },
+    });
+
+    await tx.refreshToken.updateMany({
+      where: {
+        session: {
+          userId: authToken.userId,
+        },
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    });
   });
 }
 

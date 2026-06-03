@@ -5,7 +5,10 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "tsx --test src/app.test.ts src/modules/auth/auth.schema.test.ts"
+    "test": "tsx --test src/app.test.ts src/modules/auth/auth.schema.test.ts",
+    "test:integration": "tsx --test src/modules/auth/auth.integration.test.ts",
+    "tokens:cleanup": "tsx src/jobs/cleanupTokens.ts",
+    "email:outbox": "tsx src/jobs/processEmailOutbox.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
@@ -19,16 +22,20 @@
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "fastify-plugin": "^5.1.0",
-    "mongoose": "^9.4.1",
+    "nodemailer": "^8.0.10",
     "pg": "^8.21.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
     "@types/node": "^25.6.0",
+    "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.20.0",
     "prisma": "^7.8.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   }
 }

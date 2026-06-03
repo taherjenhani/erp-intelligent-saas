@@ -6,9 +6,20 @@ import fp from "fastify-plugin";
 
 import { env } from "../config/env";
 
+const allowedOrigins = env.CORS_ORIGIN.split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
 const securityPlugin: FastifyPluginAsync = async (app) => {
   await app.register(cors, {
-    origin: env.CORS_ORIGIN,
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+        return;
+      }
+
+      callback(new Error("CORS origin not allowed"), false);
+    },
     credentials: true,
   });
 
