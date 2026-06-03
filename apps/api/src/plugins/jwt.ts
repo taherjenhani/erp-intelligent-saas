@@ -8,19 +8,5 @@ export default fp(async (app) => {
 
   await app.register(jwt, {
     secret: env.JWT_ACCESS_SECRET,
-    namespace: "access",
-    jwtSign: "signAccessToken",
-    jwtVerify: "verifyAccessToken",
-  });
-
-  await app.register(jwt, {
-    secret: env.JWT_REFRESH_SECRET,
-    namespace: "refresh",
-    jwtSign: "signRefreshToken",
-    jwtVerify: "verifyRefreshToken",
-    cookie: {
-      cookieName: "refreshToken",
-      signed: false,
-    },
   });
 });
