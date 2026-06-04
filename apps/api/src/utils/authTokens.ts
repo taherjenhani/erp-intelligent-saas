@@ -1,4 +1,4 @@
-import type { Role, Session } from "@prisma/client";
+import type { PlatformRole, Role, Session } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import { env } from "../config/env";
@@ -16,7 +16,9 @@ export type AuthUserPayload = {
   id: string;
   email: string;
   role: Role;
+  platformRole: PlatformRole;
   storeIds: string[];
+  organizationIds: string[];
 };
 
 export type RefreshTokenRecord = {
@@ -52,8 +54,10 @@ export function signAccessToken(
     {
       email: user.email,
       role: user.role,
+      platformRole: user.platformRole,
       sessionId,
       storeIds: user.storeIds,
+      organizationIds: user.organizationIds,
     },
     {
       sub: user.id,

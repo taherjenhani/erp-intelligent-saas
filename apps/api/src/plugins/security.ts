@@ -3,6 +3,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
+import Redis from "ioredis";
 
 import { env } from "../config/env";
 
@@ -11,6 +12,19 @@ const allowedOrigins = env.CORS_ORIGIN.split(",")
   .filter(Boolean);
 
 const securityPlugin: FastifyPluginAsync = async (app) => {
+  const redis = env.RATE_LIMIT_REDIS_URL
+    ? new Redis(env.RATE_LIMIT_REDIS_URL, {
+        keyPrefix: "erp-api:rate-limit:",
+        maxRetriesPerRequest: 1,
+      })
+    : undefined;
+
+  if (redis) {
+    app.addHook("onClose", async () => {
+      redis.disconnect();
+    });
+  }
+
   await app.register(cors, {
     origin: (origin, callback) => {
       if (!origin || allowedOrigins.includes(origin)) {
@@ -27,6 +41,7 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
     global: false,
     max: 100,
     timeWindow: "1 minute",
+    redis,
   });
 
   await app.register(csrfProtection, {

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   changePasswordSchema,
   registerSchema,
+  resetPasswordSchema,
 } from "./auth.schema";
 
 test("registerSchema accepts a strong registration payload", () => {
@@ -35,4 +36,20 @@ test("changePasswordSchema requires a different new password", () => {
   });
 
   assert.equal(result.success, false);
+});
+
+test("resetPasswordSchema requires a 128-character hex token", () => {
+  const result = resetPasswordSchema.safeParse({
+    token: "a".repeat(128),
+    password: "StrongPass1!",
+  });
+
+  assert.equal(result.success, true);
+
+  const invalid = resetPasswordSchema.safeParse({
+    token: "z".repeat(128),
+    password: "StrongPass1!",
+  });
+
+  assert.equal(invalid.success, false);
 });

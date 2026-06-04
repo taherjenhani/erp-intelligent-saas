@@ -5,7 +5,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "tsx --test src/app.test.ts src/modules/auth/auth.schema.test.ts",
+    "test": "tsx --test src/app.test.ts src/config/env.test.ts src/modules/auth/auth.schema.test.ts",
     "test:integration": "tsx --test src/modules/auth/auth.integration.test.ts",
     "tokens:cleanup": "tsx src/jobs/cleanupTokens.ts",
     "email:outbox": "tsx src/jobs/processEmailOutbox.ts"
@@ -22,6 +22,7 @@
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
     "fastify-plugin": "^5.1.0",
+    "ioredis": "^5.11.1",
     "nodemailer": "^8.0.10",
     "pg": "^8.21.0",
     "zod": "^4.4.3"

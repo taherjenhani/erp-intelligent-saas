@@ -1,11 +1,13 @@
-import { Role } from "@prisma/client";
+import { PlatformRole, Role } from "@prisma/client";
 
 export type AccessTokenPayload = {
   sub: string;
   email: string;
   role: Role;
+  platformRole: PlatformRole;
   sessionId: string;
   storeIds: string[];
+  organizationIds: string[];
 };
 
 export type RefreshTokenPayload = {

@@ -13,6 +13,11 @@ enum Role {
   EMPLOYEE
 }
 
+enum PlatformRole {
+  SUPER_ADMIN
+  USER
+}
+
 enum SessionStatus {
   ACTIVE
   REVOKED
@@ -27,6 +32,11 @@ enum AuditAction {
   REFRESH_TOKEN
   TOKEN_REUSE_DETECTED
   ACCESS_DENIED
+  EMAIL_VERIFICATION_REQUESTED
+  EMAIL_VERIFIED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  PASSWORD_CHANGED
 }
 
 enum AuthTokenPurpose {
@@ -36,30 +46,49 @@ enum AuthTokenPurpose {
 
 enum EmailStatus {
   PENDING
+  PROCESSING
   SENT
   FAILED
 }
 
 model User {
-  id        String  @id @default(cuid())
-  firstName String
-  lastName  String
-  email     String  @unique
-  password  String
-  role      Role    @default(EMPLOYEE)
-  isActive  Boolean @default(true)
+  id           String       @id @default(cuid())
+  firstName    String
+  lastName     String
+  email        String       @unique
+  password     String
+  role         Role         @default(EMPLOYEE)
+  platformRole PlatformRole @default(USER)
+  isActive     Boolean      @default(true)
 
   sessions      Session[]
   storeAccesses UserStoreAccess[]
+  memberships   Membership[]
   auditLogs     AuditLog[]
   authTokens    AuthToken[]
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   emailVerifiedAt DateTime?
 
   @@index([email])
   @@index([role])
+  @@index([platformRole])
+}
+
+model Organization {
+  id       String  @id @default(cuid())
+  name     String
+  code     String  @unique
+  isActive Boolean @default(true)
+
+  memberships Membership[]
+  stores      Store[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([code])
 }
 
 model Store {
@@ -69,6 +98,9 @@ model Store {
   address  String?
   isActive Boolean @default(true)
 
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+
   warehouses   Warehouse[]
   userAccesses UserStoreAccess[]
 
@@ -76,6 +108,26 @@ model Store {
   updatedAt DateTime @updatedAt
 
   @@index([code])
+  @@index([organizationId])
+}
+
+model Membership {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  role Role @default(EMPLOYEE)
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, organizationId])
+  @@index([userId])
+  @@index([organizationId])
+  @@index([role])
 }
 
 model Warehouse {
@@ -131,11 +183,14 @@ model UserStoreAccess {
   storeId String
   store   Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
 
+  role Role @default(EMPLOYEE)
+
   createdAt DateTime @default(now())
 
   @@unique([userId, storeId])
   @@index([userId])
   @@index([storeId])
+  @@index([role])
 }
 
 model Session {
@@ -168,19 +223,22 @@ model RefreshToken {
   sessionId String
   session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
-  revokedAt DateTime?
-  expiresAt DateTime
-  createdAt DateTime  @default(now())
+  revokedAt         DateTime?
+  rotatedAt         DateTime?
+  replacedByTokenId String?
+  expiresAt         DateTime
+  createdAt         DateTime  @default(now())
 
   @@index([sessionId])
   @@index([familyId])
+  @@index([replacedByTokenId])
   @@index([revokedAt, expiresAt])
 }
 
 model AuthToken {
   id String @id @default(cuid())
 
-  tokenHash String @unique
+  tokenHash String           @unique
   purpose   AuthTokenPurpose
 
   userId String
@@ -225,11 +283,14 @@ model EmailOutbox {
   attempts      Int         @default(0)
   lastError     String?
   nextAttemptAt DateTime    @default(now())
+  lockedAt      DateTime?
+  lockedBy      String?
   sentAt        DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status, nextAttemptAt])
+  @@index([lockedAt])
   @@index([createdAt])
 }

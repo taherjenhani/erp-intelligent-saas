@@ -16,22 +16,43 @@ export function generateFamilyId(): string {
 export async function hashToken(
   token: string
 ): Promise<string> {
+  return hashTokenWithSecret(token, env.TOKEN_HASH_SECRET);
+}
+
+async function hashTokenWithSecret(
+  token: string,
+  secret: string
+): Promise<string> {
   return crypto
-    .createHmac("sha256", env.PASSWORD_PEPPER)
+    .createHmac("sha256", secret)
     .update(token)
     .digest("hex");
+}
+
+export async function getTokenHashCandidates(
+  token: string
+): Promise<string[]> {
+  const candidates = [
+    await hashTokenWithSecret(token, env.TOKEN_HASH_SECRET),
+    await hashTokenWithSecret(token, env.PASSWORD_PEPPER),
+  ];
+
+  return [...new Set(candidates)];
 }
 
 export async function verifyToken(
   token: string,
   tokenHash: string
 ): Promise<boolean> {
-  const nextTokenHash = await hashToken(token);
   const expected = Buffer.from(tokenHash, "hex");
-  const actual = Buffer.from(nextTokenHash, "hex");
+  const candidates = await getTokenHashCandidates(token);
 
-  return (
-    expected.length === actual.length &&
-    crypto.timingSafeEqual(expected, actual)
-  );
+  return candidates.some((candidate) => {
+    const actual = Buffer.from(candidate, "hex");
+
+    return (
+      expected.length === actual.length &&
+      crypto.timingSafeEqual(expected, actual)
+    );
+  });
 }

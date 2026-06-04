@@ -9,6 +9,11 @@ const passwordSchema = z
   .regex(/[0-9]/, "Password must contain at least one number")
   .regex(/[^A-Za-z0-9]/, "Password must contain at least one special character");
 
+const authTokenSchema = z
+  .string()
+  .length(128)
+  .regex(/^[a-f0-9]+$/);
+
 export const registerSchema = z.object({
   firstName: z.string().trim().min(2).max(50),
   lastName: z.string().trim().min(2).max(50),
@@ -26,7 +31,11 @@ export const loginSchema = z.object({
 });
 
 export const verifyEmailSchema = z.object({
-  token: z.string().min(64),
+  token: authTokenSchema,
+});
+
+export const resendEmailVerificationSchema = z.object({
+  email: z.string().trim().email().toLowerCase(),
 });
 
 export const requestPasswordResetSchema = z.object({
@@ -34,7 +43,7 @@ export const requestPasswordResetSchema = z.object({
 });
 
 export const resetPasswordSchema = z.object({
-  token: z.string().min(64),
+  token: authTokenSchema,
   password: passwordSchema,
 });
 
@@ -54,6 +63,9 @@ export const changePasswordSchema = z
 export type RegisterInput = z.infer<typeof registerSchema>;
 export type LoginInput = z.infer<typeof loginSchema>;
 export type VerifyEmailInput = z.infer<typeof verifyEmailSchema>;
+export type ResendEmailVerificationInput = z.infer<
+  typeof resendEmailVerificationSchema
+>;
 export type RequestPasswordResetInput = z.infer<
   typeof requestPasswordResetSchema
 >;

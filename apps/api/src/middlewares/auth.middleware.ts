@@ -1,4 +1,4 @@
-import type { Role } from "@prisma/client";
+import type { PlatformRole, Role } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import { writeAuditLog } from "../lib/audit";
@@ -9,8 +9,12 @@ export type AuthContext = {
   userId: string;
   email: string;
   role: Role;
+  platformRole: PlatformRole;
   sessionId: string;
   storeIds: string[];
+  storeRoles: Record<string, Role>;
+  organizationIds: string[];
+  organizationRoles: Record<string, Role>;
 };
 
 export async function requireAuth(
@@ -31,6 +35,13 @@ export async function requireAuth(
             storeAccesses: {
               select: {
                 storeId: true,
+                role: true,
+              },
+            },
+            memberships: {
+              select: {
+                organizationId: true,
+                role: true,
               },
             },
           },
@@ -69,9 +80,25 @@ export async function requireAuth(
       userId: session.user.id,
       email: session.user.email,
       role: session.user.role,
+      platformRole: session.user.platformRole,
       sessionId: session.id,
       storeIds: session.user.storeAccesses.map(
         (access) => access.storeId
+      ),
+      storeRoles: Object.fromEntries(
+        session.user.storeAccesses.map((access) => [
+          access.storeId,
+          access.role,
+        ])
+      ),
+      organizationIds: session.user.memberships.map(
+        (membership) => membership.organizationId
+      ),
+      organizationRoles: Object.fromEntries(
+        session.user.memberships.map((membership) => [
+          membership.organizationId,
+          membership.role,
+        ])
       ),
     };
   } catch (error) {

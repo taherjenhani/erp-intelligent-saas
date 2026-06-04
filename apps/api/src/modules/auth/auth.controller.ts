@@ -11,6 +11,7 @@ import {
   changePasswordSchema,
   loginSchema,
   registerSchema,
+  resendEmailVerificationSchema,
   requestPasswordResetSchema,
   resetPasswordSchema,
   verifyEmailSchema,
@@ -21,6 +22,7 @@ import {
   logoutUser,
   refreshSession,
   registerUser,
+  resendEmailVerification,
   requestPasswordReset,
   resetPassword,
   verifyEmail,
@@ -171,11 +173,35 @@ export async function verifyEmailController(
 ) {
   const body = verifyEmailSchema.parse(request.body);
 
-  await verifyEmail(body);
+  await verifyEmail(body, getRequestContext(request));
 
   return reply.status(200).send({
     success: true,
     message: "Email verified successfully",
+  });
+}
+
+export async function resendEmailVerificationController(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  const body = resendEmailVerificationSchema.parse(request.body);
+  const result = await resendEmailVerification(
+    body,
+    getRequestContext(request)
+  );
+
+  return reply.status(200).send({
+    success: true,
+    message:
+      "If an active unverified account exists, a verification link has been prepared",
+    data:
+      env.EXPOSE_AUTH_TOKENS
+        ? {
+            emailVerificationToken:
+              result.emailVerificationToken,
+          }
+        : undefined,
   });
 }
 
@@ -184,7 +210,10 @@ export async function requestPasswordResetController(
   reply: FastifyReply
 ) {
   const body = requestPasswordResetSchema.parse(request.body);
-  const result = await requestPasswordReset(body);
+  const result = await requestPasswordReset(
+    body,
+    getRequestContext(request)
+  );
 
   return reply.status(200).send({
     success: true,
@@ -203,7 +232,7 @@ export async function resetPasswordController(
 ) {
   const body = resetPasswordSchema.parse(request.body);
 
-  await resetPassword(body);
+  await resetPassword(body, getRequestContext(request));
 
   return reply.status(200).send({
     success: true,
@@ -221,7 +250,12 @@ export async function changePasswordController(
 
   const body = changePasswordSchema.parse(request.body);
 
-  await changePassword(request.auth.userId, body);
+  await changePassword(
+    request.auth.userId,
+    request.auth.sessionId,
+    body,
+    getRequestContext(request)
+  );
 
   return reply.status(200).send({
     success: true,

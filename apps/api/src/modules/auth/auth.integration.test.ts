@@ -110,6 +110,243 @@ test("auth routes register, verify, login and return /me", async (t) => {
     assert.equal(meResponse.statusCode, 200);
     assert.equal(meResponse.json().data.email, email);
   } finally {
+    await prisma.emailOutbox.deleteMany({
+      where: { to: email },
+    });
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+    await app.close();
+    await prisma.$disconnect();
+  }
+});
+
+test("password reset token cannot be reused", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const app = buildApp();
+  const email = `reset-${Date.now()}@example.com`;
+  const password = "StrongPass1!";
+
+  try {
+    await prisma.emailOutbox.deleteMany({
+      where: { to: email },
+    });
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+
+    const registerCsrf = await getCsrf(app);
+    const registerResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      headers: {
+        cookie: registerCsrf.cookie,
+        "x-csrf-token": registerCsrf.csrfToken,
+      },
+      payload: {
+        firstName: "Reset",
+        lastName: "Tester",
+        email,
+        password,
+      },
+    });
+
+    assert.equal(registerResponse.statusCode, 201);
+
+    const verificationToken =
+      registerResponse.json().data.emailVerificationToken;
+
+    const verifyCsrf = await getCsrf(app);
+    const verifyResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      headers: {
+        cookie: verifyCsrf.cookie,
+        "x-csrf-token": verifyCsrf.csrfToken,
+      },
+      payload: {
+        token: verificationToken,
+      },
+    });
+
+    assert.equal(verifyResponse.statusCode, 200);
+
+    const forgotCsrf = await getCsrf(app);
+    const forgotResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/forgot-password",
+      headers: {
+        cookie: forgotCsrf.cookie,
+        "x-csrf-token": forgotCsrf.csrfToken,
+      },
+      payload: {
+        email,
+      },
+    });
+
+    assert.equal(forgotResponse.statusCode, 200);
+
+    const resetToken = forgotResponse.json().data.resetToken;
+    assert.equal(typeof resetToken, "string");
+
+    const resetCsrf = await getCsrf(app);
+    const resetResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/reset-password",
+      headers: {
+        cookie: resetCsrf.cookie,
+        "x-csrf-token": resetCsrf.csrfToken,
+      },
+      payload: {
+        token: resetToken,
+        password: "NewStrongPass1!",
+      },
+    });
+
+    assert.equal(resetResponse.statusCode, 200);
+
+    const reusedResetCsrf = await getCsrf(app);
+    const reusedResetResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/reset-password",
+      headers: {
+        cookie: reusedResetCsrf.cookie,
+        "x-csrf-token": reusedResetCsrf.csrfToken,
+      },
+      payload: {
+        token: resetToken,
+        password: "AnotherStrongPass1!",
+      },
+    });
+
+    assert.equal(reusedResetResponse.statusCode, 401);
+    assert.equal(
+      reusedResetResponse.json().code,
+      "AUTH_INVALID_RESET_TOKEN"
+    );
+  } finally {
+    await prisma.emailOutbox.deleteMany({
+      where: { to: email },
+    });
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+    await app.close();
+    await prisma.$disconnect();
+  }
+});
+
+test("concurrent refresh requests are idempotent", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const app = buildApp();
+  const email = `refresh-${Date.now()}@example.com`;
+  const password = "StrongPass1!";
+
+  try {
+    await prisma.emailOutbox.deleteMany({
+      where: { to: email },
+    });
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+
+    const registerCsrf = await getCsrf(app);
+    const registerResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/register",
+      headers: {
+        cookie: registerCsrf.cookie,
+        "x-csrf-token": registerCsrf.csrfToken,
+      },
+      payload: {
+        firstName: "Refresh",
+        lastName: "Tester",
+        email,
+        password,
+      },
+    });
+
+    assert.equal(registerResponse.statusCode, 201);
+
+    const verificationToken =
+      registerResponse.json().data.emailVerificationToken;
+
+    const verifyCsrf = await getCsrf(app);
+    const verifyResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/verify-email",
+      headers: {
+        cookie: verifyCsrf.cookie,
+        "x-csrf-token": verifyCsrf.csrfToken,
+      },
+      payload: {
+        token: verificationToken,
+      },
+    });
+
+    assert.equal(verifyResponse.statusCode, 200);
+
+    const loginCsrf = await getCsrf(app);
+    const loginResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      headers: {
+        cookie: loginCsrf.cookie,
+        "x-csrf-token": loginCsrf.csrfToken,
+      },
+      payload: {
+        email,
+        password,
+      },
+    });
+
+    assert.equal(loginResponse.statusCode, 200);
+
+    const refreshCookie = getCookieHeader(
+      loginResponse.headers["set-cookie"]
+    );
+    const refreshCsrf = await getCsrf(app);
+    const cookie = [refreshCookie, refreshCsrf.cookie]
+      .filter(Boolean)
+      .join("; ");
+
+    const refreshRequest = () =>
+      app.inject({
+        method: "POST",
+        url: "/api/auth/refresh",
+        headers: {
+          cookie,
+          "x-csrf-token": refreshCsrf.csrfToken,
+        },
+      });
+
+    const [firstRefresh, secondRefresh] = await Promise.all([
+      refreshRequest(),
+      refreshRequest(),
+    ]);
+
+    assert.equal(firstRefresh.statusCode, 200);
+    assert.equal(secondRefresh.statusCode, 200);
+    assert.equal(
+      typeof firstRefresh.json().data.accessToken,
+      "string"
+    );
+    assert.equal(
+      typeof secondRefresh.json().data.accessToken,
+      "string"
+    );
+  } finally {
+    await prisma.emailOutbox.deleteMany({
+      where: { to: email },
+    });
     await prisma.user.deleteMany({
       where: { email },
     });
