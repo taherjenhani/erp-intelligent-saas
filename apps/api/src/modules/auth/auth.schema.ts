@@ -23,35 +23,36 @@ export const registerSchema = z.object({
     .string()
     .cuid("Store id must be a valid cuid")
     .optional(),
-});
+}).strict();
 
 export const loginSchema = z.object({
   email: z.string().trim().email().toLowerCase(),
   password: z.string().min(1).max(72),
-});
+}).strict();
 
 export const verifyEmailSchema = z.object({
   token: authTokenSchema,
-});
+}).strict();
 
 export const resendEmailVerificationSchema = z.object({
   email: z.string().trim().email().toLowerCase(),
-});
+}).strict();
 
 export const requestPasswordResetSchema = z.object({
   email: z.string().trim().email().toLowerCase(),
-});
+}).strict();
 
 export const resetPasswordSchema = z.object({
   token: authTokenSchema,
   password: passwordSchema,
-});
+}).strict();
 
 export const changePasswordSchema = z
   .object({
     currentPassword: z.string().min(1).max(72),
     newPassword: passwordSchema,
   })
+  .strict()
   .refine(
     (data) => data.currentPassword !== data.newPassword,
     {

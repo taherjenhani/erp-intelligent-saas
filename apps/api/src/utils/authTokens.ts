@@ -1,5 +1,6 @@
 import type { PlatformRole, Role, Session } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
+import crypto from "crypto";
 
 import { env } from "../config/env";
 import {
@@ -52,6 +53,9 @@ export function signAccessToken(
 ) {
   return request.server.jwt.sign(
     {
+      iss: env.JWT_ISSUER,
+      aud: env.JWT_AUDIENCE,
+      jti: crypto.randomUUID(),
       email: user.email,
       role: user.role,
       platformRole: user.platformRole,

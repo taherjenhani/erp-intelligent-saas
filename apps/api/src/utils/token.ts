@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { env } from "../config/env";
+import { isLegacySecretFallbackEnabled } from "./legacySecrets";
 
 const REFRESH_TOKEN_BYTES = 64;
 
@@ -34,8 +35,11 @@ export async function getTokenHashCandidates(
 ): Promise<string[]> {
   const candidates = [
     await hashTokenWithSecret(token, env.TOKEN_HASH_SECRET),
-    await hashTokenWithSecret(token, env.PASSWORD_PEPPER),
   ];
+
+  if (isLegacySecretFallbackEnabled()) {
+    candidates.push(await hashTokenWithSecret(token, env.PASSWORD_PEPPER));
+  }
 
   return [...new Set(candidates)];
 }

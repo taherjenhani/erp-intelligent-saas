@@ -5,4 +5,9 @@ export {
   resetPassword,
 } from "./password.service";
 export { registerUser } from "./registration.service";
-export { loginUser, logoutUser, refreshSession } from "./session.service";
+export {
+  loginUser,
+  logoutAllUserSessions,
+  logoutUser,
+  refreshSession,
+} from "./session.service";

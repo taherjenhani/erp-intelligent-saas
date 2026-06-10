@@ -2,7 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildApp } from "../../app";
+import {
+  decryptEmailMessageFromStorage,
+  encryptLegacyEmailOutboxBatch,
+  enqueueEmail,
+  processQueuedEmail,
+  rotateEmailOutboxEncryptionBatch,
+  SCRUBBED_EMAIL_BODY,
+} from "../../lib/email";
 import { prisma } from "../../lib/prisma";
+import { hashPassword } from "../../utils/hash";
+import { loginUser } from "./auth.service";
 
 function getCookieHeader(setCookie: string | string[] | undefined) {
   if (!setCookie) {
@@ -351,6 +361,262 @@ test("concurrent refresh requests are idempotent", async (t) => {
       where: { email },
     });
     await app.close();
+    await prisma.$disconnect();
+  }
+});
+
+test("login lock blocks repeated invalid credentials and resets after success", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const email = `lock-${Date.now()}@example.com`;
+  const ipAddress = `203.0.113.${Date.now() % 200}`;
+  const password = "StrongPass1!";
+  const context = {
+    ipAddress,
+    userAgent: "auth-integration-test",
+  };
+
+  try {
+    await prisma.loginLock.deleteMany({
+      where: {
+        OR: [
+          { identityKey: email },
+          { identityKey: ipAddress },
+        ],
+      },
+    });
+    await prisma.loginAttempt.deleteMany({
+      where: { email },
+    });
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+
+    await prisma.user.create({
+      data: {
+        firstName: "Lock",
+        lastName: "Tester",
+        email,
+        password: await hashPassword(password),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await assert.rejects(
+        () =>
+          loginUser(
+            {
+              email,
+              password: "WrongStrongPass1!",
+            },
+            context
+          ),
+        (error: unknown) =>
+          error instanceof Error &&
+          "code" in error &&
+          error.code === "AUTH_INVALID_CREDENTIALS"
+      );
+    }
+
+    await assert.rejects(
+      () =>
+        loginUser(
+          {
+            email,
+            password,
+          },
+          context
+        ),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "AUTH_TOO_MANY_ATTEMPTS"
+    );
+
+    await prisma.loginLock.updateMany({
+      where: {
+        OR: [
+          { identityKey: email },
+          { identityKey: ipAddress },
+        ],
+      },
+      data: {
+        lockedUntil: null,
+      },
+    });
+
+    await loginUser(
+      {
+        email,
+        password,
+      },
+      context
+    );
+
+    const locks = await prisma.loginLock.findMany({
+      where: {
+        OR: [
+          { identityKey: email },
+          { identityKey: ipAddress },
+        ],
+      },
+    });
+
+    assert.equal(locks.every((lock) => lock.failedCount === 0), true);
+    assert.equal(locks.every((lock) => lock.lockedUntil === null), true);
+  } finally {
+    await prisma.loginLock.deleteMany({
+      where: {
+        OR: [
+          { identityKey: email },
+          { identityKey: ipAddress },
+        ],
+      },
+    });
+    await prisma.loginAttempt.deleteMany({
+      where: { email },
+    });
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("email outbox marks sent_unknown when sent state cannot be persisted", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const to = `sent-unknown-${Date.now()}@example.com`;
+  const queued = await enqueueEmail(prisma, {
+    to,
+    subject: "Sent unknown test",
+    text: "Body",
+    html: "<p>Body</p>",
+  });
+  const originalUpdateMany = prisma.emailOutbox.updateMany.bind(
+    prisma.emailOutbox
+  );
+  let updateManyCalls = 0;
+
+  prisma.emailOutbox.updateMany = (async (args) => {
+    updateManyCalls += 1;
+
+    if (updateManyCalls === 2) {
+      throw new Error("Simulated SENT persistence failure");
+    }
+
+    return originalUpdateMany(args);
+  }) as typeof prisma.emailOutbox.updateMany;
+
+  try {
+    await processQueuedEmail(queued.id, "integration-test");
+
+    const email = await prisma.emailOutbox.findUniqueOrThrow({
+      where: { id: queued.id },
+    });
+
+    assert.equal(email.status, "SENT_UNKNOWN");
+    assert.equal(email.lastErrorSource, "PERSISTENCE");
+    assert.equal(email.providerMessageId, queued.messageId);
+    assert.equal(email.sentUnknownAt instanceof Date, true);
+  } finally {
+    prisma.emailOutbox.updateMany = originalUpdateMany;
+    await prisma.emailOutbox.deleteMany({
+      where: { to },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("email outbox legacy encryption scrubs sent rows and rotates pending rows", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const sentTo = `legacy-sent-${Date.now()}@example.com`;
+  const pendingTo = `legacy-pending-${Date.now()}@example.com`;
+  const rotationTo = `rotation-${Date.now()}@example.com`;
+  const secret = "legacy-token-value";
+
+  try {
+    await prisma.emailOutbox.create({
+      data: {
+        messageId: `<legacy-sent-${Date.now()}@example.com>`,
+        to: sentTo,
+        subject: "Legacy sent",
+        text: `sensitive ${secret}`,
+        html: `<p>sensitive ${secret}</p>`,
+        status: "SENT",
+        sentAt: new Date(),
+      },
+    });
+    await prisma.emailOutbox.create({
+      data: {
+        messageId: `<legacy-pending-${Date.now()}@example.com>`,
+        to: pendingTo,
+        subject: "Legacy pending",
+        text: `pending ${secret}`,
+        html: `<p>pending ${secret}</p>`,
+        status: "PENDING",
+      },
+    });
+    const rotationQueued = await enqueueEmail(prisma, {
+      to: rotationTo,
+      subject: "Rotation",
+      text: `rotate ${secret}`,
+      html: `<p>rotate ${secret}</p>`,
+    });
+
+    await prisma.emailOutbox.update({
+      where: { id: rotationQueued.id },
+      data: {
+        encryptionKeyId: "old-key",
+      },
+    });
+
+    const legacyResult = await encryptLegacyEmailOutboxBatch(50);
+    const rotationResult = await rotateEmailOutboxEncryptionBatch(50);
+
+    assert.equal(legacyResult.scrubbedSent >= 1, true);
+    assert.equal(legacyResult.encryptedPendingOrFailed >= 1, true);
+    assert.equal(rotationResult.rotated >= 1, true);
+
+    const sent = await prisma.emailOutbox.findFirstOrThrow({
+      where: { to: sentTo },
+    });
+    const pending = await prisma.emailOutbox.findFirstOrThrow({
+      where: { to: pendingTo },
+    });
+    const rotated = await prisma.emailOutbox.findUniqueOrThrow({
+      where: { id: rotationQueued.id },
+    });
+
+    assert.equal(sent.text, SCRUBBED_EMAIL_BODY);
+    assert.equal(sent.html, SCRUBBED_EMAIL_BODY);
+    assert.equal(pending.text.includes(secret), false);
+    assert.equal(pending.html.includes(secret), false);
+    assert.equal(pending.encryptionKeyId, "local-dev");
+    assert.equal(rotated.encryptionKeyId, "local-dev");
+    assert.equal(
+      decryptEmailMessageFromStorage(pending).text,
+      `pending ${secret}`
+    );
+  } finally {
+    await prisma.emailOutbox.deleteMany({
+      where: {
+        to: {
+          in: [sentTo, pendingTo, rotationTo],
+        },
+      },
+    });
     await prisma.$disconnect();
   }
 });

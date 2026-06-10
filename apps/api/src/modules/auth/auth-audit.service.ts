@@ -14,6 +14,7 @@ export async function writeAuthAudit(
     userId,
     ipAddress: context.ipAddress,
     userAgent: context.userAgent,
+    correlationId: context.correlationId,
     metadata,
   });
 }

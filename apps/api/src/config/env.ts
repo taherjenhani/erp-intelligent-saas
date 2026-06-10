@@ -5,6 +5,13 @@ const DEVELOPMENT_CSRF_SECRET =
   "development-csrf-secret-change-before-prod";
 const DEVELOPMENT_TOKEN_HASH_SECRET =
   "development-token-hash-secret-change-before-prod";
+const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY =
+  "development-email-outbox-encryption-key-change-before-prod";
+const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY_ID = "local-dev";
+const DEVELOPMENT_CORS_ORIGIN = "http://localhost:3000";
+const LEGACY_SECRET_FALLBACK_DEADLINE =
+  "2026-09-30T00:00:00.000Z";
+const KEY_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
 
 const booleanFromEnv = z.preprocess((value) => {
   if (typeof value !== "string") {
@@ -48,6 +55,40 @@ function hasOnlyLocalCorsOrigins(value: string) {
   );
 }
 
+function hasAnyLocalCorsOrigin(value: string) {
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .some((origin) => isLocalUrl(origin));
+}
+
+function isValidDateTime(value: string) {
+  return !Number.isNaN(Date.parse(value));
+}
+
+function parseEmailOutboxKeyring(value: string | undefined) {
+  if (!value) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
 const envSchema = z
   .object({
     NODE_ENV: z
@@ -59,7 +100,7 @@ const envSchema = z
     DATABASE_URL: z.string().min(1),
     SHADOW_DATABASE_URL: z.string().url().optional(),
 
-    CORS_ORIGIN: z.string().default("http://localhost:3000"),
+    CORS_ORIGIN: z.string().default(DEVELOPMENT_CORS_ORIGIN),
 
     APP_URL: z.string().url().default("http://localhost:3000"),
     EXPOSE_AUTH_TOKENS: booleanFromEnv.default(false),
@@ -73,6 +114,21 @@ const envSchema = z
 
     LOGIN_RATE_LIMIT_MAX: z.coerce.number().default(5),
     LOGIN_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
+    LOGIN_ATTEMPT_WINDOW_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(15 * 60 * 1000),
+    LOGIN_ATTEMPT_EMAIL_MAX: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5),
+    LOGIN_ATTEMPT_IP_MAX: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(20),
     AUTH_RATE_LIMIT_MAX: z.coerce.number().default(10),
     AUTH_RATE_LIMIT_WINDOW: z.string().default("10 minutes"),
     RATE_LIMIT_REDIS_URL: z.string().url().optional(),
@@ -80,7 +136,7 @@ const envSchema = z
     REFRESH_TOKEN_REUSE_GRACE_MS: z.coerce
       .number()
       .positive()
-      .default(10 * 1000),
+      .default(5 * 1000),
 
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().default(587),
@@ -92,10 +148,32 @@ const envSchema = z
       .number()
       .positive()
       .default(10 * 60 * 1000),
+    EMAIL_OUTBOX_ENCRYPTION_KEY: z
+      .string()
+      .min(
+        32,
+        "EMAIL_OUTBOX_ENCRYPTION_KEY must contain at least 32 characters"
+      )
+      .default(DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY),
+    EMAIL_OUTBOX_ENCRYPTION_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, "EMAIL_OUTBOX_ENCRYPTION_KEY_ID is invalid")
+      .default(DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY_ID),
+    EMAIL_OUTBOX_ENCRYPTION_KEYS: z.string().optional(),
+    EMAIL_OUTBOX_WORKER_ENABLED: booleanFromEnv.default(false),
+    EMAIL_OUTBOX_WORKER_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 1000),
+    METRICS_ENABLED: booleanFromEnv.default(false),
+    METRICS_TOKEN: z.string().min(16).optional(),
 
     JWT_ACCESS_SECRET: z
       .string()
       .min(32, "JWT_ACCESS_SECRET must contain at least 32 characters"),
+    JWT_ISSUER: z.string().min(1).default("erp-api"),
+    JWT_AUDIENCE: z.string().min(1).default("erp-app"),
 
     PASSWORD_PEPPER: z
       .string()
@@ -104,6 +182,13 @@ const envSchema = z
       .string()
       .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters")
       .default(DEVELOPMENT_TOKEN_HASH_SECRET),
+    LEGACY_SECRET_FALLBACK_UNTIL: z
+      .string()
+      .refine(
+        isValidDateTime,
+        "LEGACY_SECRET_FALLBACK_UNTIL must be a valid date"
+      )
+      .default(LEGACY_SECRET_FALLBACK_DEADLINE),
   })
   .superRefine((env, ctx) => {
     const canExposeAuthTokens =
@@ -130,8 +215,77 @@ const envSchema = z
       });
     }
 
+    const emailKeyring = parseEmailOutboxKeyring(
+      env.EMAIL_OUTBOX_ENCRYPTION_KEYS
+    );
+
+    if (emailKeyring === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EMAIL_OUTBOX_ENCRYPTION_KEYS"],
+        message:
+          "EMAIL_OUTBOX_ENCRYPTION_KEYS must be a JSON object of key ids to secrets",
+      });
+    } else {
+      for (const [keyId, secret] of Object.entries(emailKeyring)) {
+        if (!KEY_ID_PATTERN.test(keyId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["EMAIL_OUTBOX_ENCRYPTION_KEYS"],
+            message: `Invalid email outbox encryption key id: ${keyId}`,
+          });
+        }
+
+        if (typeof secret !== "string" || secret.length < 32) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["EMAIL_OUTBOX_ENCRYPTION_KEYS"],
+            message:
+              "Every EMAIL_OUTBOX_ENCRYPTION_KEYS secret must contain at least 32 characters",
+          });
+        }
+      }
+
+      if (
+        env.EMAIL_OUTBOX_ENCRYPTION_KEYS &&
+        !(env.EMAIL_OUTBOX_ENCRYPTION_KEY_ID in emailKeyring)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["EMAIL_OUTBOX_ENCRYPTION_KEY_ID"],
+          message:
+            "EMAIL_OUTBOX_ENCRYPTION_KEY_ID must exist in EMAIL_OUTBOX_ENCRYPTION_KEYS",
+        });
+      }
+    }
+
+    if (env.METRICS_ENABLED && !env.METRICS_TOKEN) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["METRICS_TOKEN"],
+        message: "METRICS_TOKEN is required when metrics are enabled",
+      });
+    }
+
     if (env.NODE_ENV !== "production") {
       return;
+    }
+
+    if (env.CORS_ORIGIN === DEVELOPMENT_CORS_ORIGIN) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CORS_ORIGIN"],
+        message: "CORS_ORIGIN must be explicit in production",
+      });
+    }
+
+    if (hasAnyLocalCorsOrigin(env.CORS_ORIGIN)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CORS_ORIGIN"],
+        message:
+          "CORS_ORIGIN must not contain local addresses in production",
+      });
     }
 
     if (env.CSRF_SECRET === DEVELOPMENT_CSRF_SECRET) {
@@ -147,6 +301,18 @@ const envSchema = z
         code: "custom",
         path: ["TOKEN_HASH_SECRET"],
         message: "TOKEN_HASH_SECRET must be explicit in production",
+      });
+    }
+
+    if (
+      env.EMAIL_OUTBOX_ENCRYPTION_KEY ===
+      DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EMAIL_OUTBOX_ENCRYPTION_KEY"],
+        message:
+          "EMAIL_OUTBOX_ENCRYPTION_KEY must be explicit in production",
       });
     }
 

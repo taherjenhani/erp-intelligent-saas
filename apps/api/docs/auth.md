@@ -2,14 +2,16 @@
 
 ## Production Checklist
 
-- Configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `CSRF_SECRET`, `APP_URL`, `RATE_LIMIT_REDIS_URL` and SMTP variables.
+- Configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `EMAIL_OUTBOX_ENCRYPTION_KEY`, `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, `CSRF_SECRET`, `APP_URL`, `CORS_ORIGIN`, `RATE_LIMIT_REDIS_URL`, `METRICS_TOKEN` when metrics are enabled, and SMTP variables.
 - Keep `PASSWORD_PEPPER` and `TOKEN_HASH_SECRET` different. Password hashes and opaque token hashes must not share the same secret.
-- Production startup fails if `CSRF_SECRET` or `TOKEN_HASH_SECRET` still uses a development default, `SMTP_HOST` is missing, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL` points to a local address, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
+- Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `SMTP_HOST` is missing, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
 - Run Prisma migrations before starting the API.
+- Before applying `20260610120000_auth_production_hardening`, backfill `Store.organizationId` for every existing store with `npm run tenant:backfill-stores`, then verify with `npm run tenant:preflight`.
 - Use HTTPS in production so refresh and CSRF cookies are sent with `secure: true`.
 - Run integration tests against a disposable PostgreSQL database before deploy.
 - Keep `EXPOSE_AUTH_TOKENS=false` outside automated tests and strict localhost development.
 - Set `TRUST_PROXY=true` only when the API is behind a trusted reverse proxy or load balancer.
+- Security headers are enabled through Helmet. Every response includes `x-request-id` and `x-correlation-id`.
 
 ## Prisma Migration Baseline
 
@@ -19,6 +21,8 @@ This repository contains the original auth baseline migration plus an incrementa
 prisma/migrations/20260603120000_auth_hardening/migration.sql
 prisma/migrations/20260604103000_auth_multitenant_outbox_hardening/migration.sql
 prisma/migrations/20260604113000_auth_crypto_refresh_platform_hardening/migration.sql
+prisma/migrations/20260610120000_auth_production_hardening/migration.sql
+prisma/migrations/20260610143000_auth_operational_hardening/migration.sql
 ```
 
 If the production database is empty, apply migrations normally:
@@ -33,6 +37,8 @@ If the production database already has the same tables, baseline it first so Pri
 npx prisma migrate resolve --applied 20260603120000_auth_hardening
 npx prisma migrate resolve --applied 20260604103000_auth_multitenant_outbox_hardening
 npx prisma migrate resolve --applied 20260604113000_auth_crypto_refresh_platform_hardening
+npx prisma migrate resolve --applied 20260610120000_auth_production_hardening
+npx prisma migrate resolve --applied 20260610143000_auth_operational_hardening
 npx prisma migrate deploy
 ```
 
@@ -61,6 +67,8 @@ npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamode
 Email verification and password reset use an `EmailOutbox` table and SMTP through `nodemailer`. Auth flows enqueue email and do not depend on SMTP being available synchronously.
 Register, resend verification, and forgot-password create the auth token and outbox row in the same Prisma transaction. If the outbox insert fails, the business operation rolls back instead of leaving a user without a deliverable email.
 Outbox workers claim messages atomically with `PROCESSING`, `lockedAt`, and `lockedBy` before delivery to avoid duplicate sends when multiple workers run. Stale locks are recovered after `EMAIL_OUTBOX_LOCK_TIMEOUT_MS`.
+Email `text` and `html` bodies are encrypted at rest with the active `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, then scrubbed after successful delivery. New encrypted values use the `enc:v1:<keyId>:<payload>` prefix. Existing legacy `enc:v1:<payload>` rows can be migrated with the maintenance job below.
+Every queued email stores a stable `messageId`. SMTP delivery uses that ID as the `Message-ID` header; this helps downstream providers deduplicate where supported. If SMTP succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
 
 Required production variables:
 
@@ -73,6 +81,11 @@ SMTP_PASS=your-password
 SMTP_FROM=noreply@example.com
 EMAIL_OUTBOX_BATCH_SIZE=20
 EMAIL_OUTBOX_LOCK_TIMEOUT_MS=600000
+EMAIL_OUTBOX_ENCRYPTION_KEY_ID=key-2026-06
+EMAIL_OUTBOX_ENCRYPTION_KEY=replace-with-at-least-32-characters
+EMAIL_OUTBOX_ENCRYPTION_KEYS={"key-2026-06":"replace-with-at-least-32-characters","key-2026-01":"previous-key-at-least-32-characters"}
+EMAIL_OUTBOX_WORKER_ENABLED=true
+EMAIL_OUTBOX_WORKER_INTERVAL_MS=60000
 ```
 
 In development, if `SMTP_HOST` is missing, emails are not sent and the message is logged to the console.
@@ -89,6 +102,20 @@ To process queued email retries:
 ```powershell
 npm run email:outbox
 ```
+
+To scrub old `SENT` bodies and encrypt legacy `PENDING`/`FAILED` rows:
+
+```powershell
+npm run email:outbox:encrypt-legacy
+```
+
+To rotate pending outbox bodies to the active key:
+
+```powershell
+npm run email:outbox:rotate-key
+```
+
+If `EMAIL_OUTBOX_WORKER_ENABLED=true`, the API process also runs a supervised inline worker. Keep only one strategy active per deployment topology: inline worker for simple deployments, external scheduled worker for separated workloads.
 
 ## CSRF And Rate Limiting
 
@@ -109,7 +136,46 @@ Rate limiting is configured for:
 - `POST /api/auth/reset-password`
 
 `POST /api/auth/login` also requires CSRF because it creates a refresh-token cookie.
-Rate limiting uses Redis when `RATE_LIMIT_REDIS_URL` is configured. Production requires Redis so limits work across multiple API instances.
+Rate limiting uses Redis when `RATE_LIMIT_REDIS_URL` is configured. Production requires Redis so limits work across multiple API instances. Startup fails if Redis is configured but unavailable.
+
+Login records append-only `LoginAttempt` rows and applies DB-backed `LoginLock` state by email/IP. Successful login resets the lock state for the email/IP identities:
+
+```env
+LOGIN_ATTEMPT_WINDOW_MS=900000
+LOGIN_ATTEMPT_EMAIL_MAX=5
+LOGIN_ATTEMPT_IP_MAX=20
+```
+
+## Observability
+
+Requests accept `x-request-id` and `x-correlation-id` only when the value is short and header-safe. The API echoes safe IDs in responses, includes `correlationId` in error payloads, and stores it in an indexed `AuditLog.correlationId` column.
+
+Metrics are disabled by default. Enable them only for internal scraping. `METRICS_TOKEN` is required whenever `METRICS_ENABLED=true`, including non-production environments:
+
+```env
+METRICS_ENABLED=true
+METRICS_TOKEN=replace-with-at-least-16-characters
+```
+
+Then scrape:
+
+```text
+GET /metrics
+Authorization: Bearer <METRICS_TOKEN>
+```
+
+Current metrics include:
+
+- `erp_audit_log_write_total`
+- `erp_email_outbox_claim_total`
+- `erp_email_outbox_delivery_total`
+- `erp_email_outbox_recovered_total`
+- `erp_email_outbox_batch_size`
+- `erp_email_outbox_batch_processed`
+- `erp_email_outbox_processed_total`
+
+Alert on `erp_email_outbox_delivery_total{status="sent_unknown"}`. It means SMTP reported success but the API could not persist the final `SENT` state; retrying those rows manually can send duplicates.
+The Prometheus rule is provided in `apps/api/monitoring/prometheus-alerts.yml`.
 
 ## Tests
 
@@ -126,6 +192,7 @@ $env:RUN_DB_TESTS="true"
 $env:NODE_ENV="test"
 $env:DATABASE_URL="postgresql://postgres:postgres@localhost:5432/erp_saas_test"
 $env:TOKEN_HASH_SECRET="test_token_hash_secret_minimum_32_chars"
+$env:EMAIL_OUTBOX_ENCRYPTION_KEY="test_email_outbox_encryption_key_minimum_32_chars"
 $env:EXPOSE_AUTH_TOKENS="true"
 npm run test:integration
 ```
@@ -134,10 +201,18 @@ Use a disposable test database. The integration test creates and deletes its own
 
 ## Maintenance Jobs
 
-Remove expired auth tokens and old refresh tokens:
+Remove expired auth tokens, old refresh tokens, old login attempts, and stale login locks:
 
 ```powershell
 npm run tokens:cleanup
+```
+
+Before applying the tenant hardening migration on an existing database:
+
+```powershell
+$env:STORE_ORGANIZATION_BACKFILL_MAP='{"storeCode":"organizationId"}'
+npm run tenant:backfill-stores
+npm run tenant:preflight
 ```
 
 Seed base ERP permissions:
@@ -149,10 +224,13 @@ npx prisma db seed
 ## Token Model
 
 - Access tokens are JWTs with a short lifetime.
+- Access tokens include `iss`, `aud`, and `jti`; protected routes verify those claims and reload session/user state from PostgreSQL.
 - Refresh tokens are opaque random tokens stored as HMAC hashes.
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.
 - Refresh token rotation is atomic and revokes the token family when reuse is detected outside the short concurrent refresh grace window.
-- Concurrent refresh requests with the same old cookie are treated as idempotent for the same session context during `REFRESH_TOKEN_REUSE_GRACE_MS`.
+- Each normal refresh writes a `RefreshRotation` row for observability and controlled same-context replay handling.
+- Concurrent refresh requests with the same old cookie are treated as idempotent for the same session context during `REFRESH_TOKEN_REUSE_GRACE_MS`, default 5 seconds, and only one grace reissue is allowed.
+- Legacy password/token fallback is bounded by `LEGACY_SECRET_FALLBACK_UNTIL`; plan to remove it after migration.
 - Protected routes reload the user, role and store access from PostgreSQL instead of trusting mutable JWT claims.
 - Auth tokens are consumed atomically so verification/reset links cannot be used twice through concurrent requests.
 
@@ -167,7 +245,7 @@ When a route contains both `organizationId` and `storeId`, add `requireStoreInOr
 
 ## Organization-Level RBAC
 
-The schema includes `Organization` and `Membership` for multi-tenant ERP boundaries. `Store.organizationId` is optional for compatibility with existing data, but new tenant-aware stores should belong to an organization.
+The schema includes `Organization` and `Membership` for multi-tenant ERP boundaries. `Store.organizationId` is mandatory after `20260610120000_auth_production_hardening`. Guards reject inactive stores and inactive organizations.
 
 Use `requireOrganizationRole("organizationId", ["ADMIN"])` or `requireOrganizationPermission("organizationId", "users.write")` on organization-scoped routes.
 

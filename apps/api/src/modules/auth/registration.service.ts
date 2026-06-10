@@ -42,15 +42,21 @@ export async function registerUser(
   let storeOrganizationId: string | null = null;
 
   if (data.storeId) {
-    const store = await prisma.store.findUnique({
-      where: { id: data.storeId },
+    const store = await prisma.store.findFirst({
+      where: {
+        id: data.storeId,
+        isActive: true,
+        organization: {
+          isActive: true,
+        },
+      },
       select: { id: true, organizationId: true },
     });
 
     if (!store) {
       throw new AuthError(
         "VALIDATION_FAILED",
-        "Store does not exist",
+        "Store does not exist or is inactive",
         400
       );
     }

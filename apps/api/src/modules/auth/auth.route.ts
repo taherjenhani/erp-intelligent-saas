@@ -5,6 +5,7 @@ import { requireAuth } from "../../middlewares/auth.middleware";
 import {
   changePasswordController,
   csrfTokenController,
+  logoutAllController,
   loginController,
   logoutController,
   meController,
@@ -104,10 +105,18 @@ export async function authRoutes(app: FastifyInstance) {
   app.post(
     "/logout",
     {
-      preHandler: requireAuth,
       preValidation: csrf,
     },
     logoutController
+  );
+
+  app.post(
+    "/logout-all",
+    {
+      preHandler: requireAuth,
+      preValidation: csrf,
+    },
+    logoutAllController
   );
 
   app.post(

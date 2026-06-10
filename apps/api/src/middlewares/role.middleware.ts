@@ -14,6 +14,7 @@ async function denyAccess(
     userId: request.auth?.userId,
     ipAddress: request.ip,
     userAgent: request.headers["user-agent"],
+    correlationId: request.correlationId,
     metadata: {
       path: request.url,
       ...metadata,
@@ -37,6 +38,37 @@ async function roleHasPermission(role: Role, permissionKey: string) {
   });
 
   return Boolean(rolePermission);
+}
+
+async function activeOrganizationExists(organizationId: string) {
+  const organization = await prisma.organization.findFirst({
+    where: {
+      id: organizationId,
+      isActive: true,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  return Boolean(organization);
+}
+
+async function activeStoreExists(storeId: string) {
+  const store = await prisma.store.findFirst({
+    where: {
+      id: storeId,
+      isActive: true,
+      organization: {
+        isActive: true,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  return Boolean(store);
 }
 
 export function requireRole(roles: Role[]) {
@@ -125,6 +157,13 @@ export function requireStorePermission(
       });
     }
 
+    if (!(await activeStoreExists(storeId))) {
+      return await denyAccess(request, {
+        reason: "store_inactive_or_missing",
+        storeId,
+      });
+    }
+
     const role =
       auth.platformRole === "SUPER_ADMIN"
         ? "SUPER_ADMIN"
@@ -163,6 +202,13 @@ export function requireOrganizationRole(
       return await denyAccess(request, {
         reason: "missing_organization_id",
         organizationIdParam,
+      });
+    }
+
+    if (!(await activeOrganizationExists(organizationId))) {
+      return await denyAccess(request, {
+        reason: "organization_inactive_or_missing",
+        organizationId,
       });
     }
 
@@ -209,6 +255,13 @@ export function requireOrganizationPermission(
       });
     }
 
+    if (!(await activeOrganizationExists(organizationId))) {
+      return await denyAccess(request, {
+        reason: "organization_inactive_or_missing",
+        organizationId,
+      });
+    }
+
     const role =
       auth.platformRole === "SUPER_ADMIN"
         ? "SUPER_ADMIN"
@@ -247,6 +300,13 @@ export function requireStoreRole(
       return await denyAccess(request, {
         reason: "missing_store_id",
         storeIdParam,
+      });
+    }
+
+    if (!(await activeStoreExists(storeId))) {
+      return await denyAccess(request, {
+        reason: "store_inactive_or_missing",
+        storeId,
       });
     }
 
@@ -300,6 +360,10 @@ export function requireStoreInOrganization(
       where: {
         id: storeId,
         organizationId,
+        isActive: true,
+        organization: {
+          isActive: true,
+        },
       },
       select: {
         id: true,

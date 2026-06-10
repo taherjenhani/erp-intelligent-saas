@@ -19,6 +19,7 @@ import {
 import {
   changePassword,
   loginUser,
+  logoutAllUserSessions,
   logoutUser,
   refreshSession,
   registerUser,
@@ -32,6 +33,7 @@ function getRequestContext(request: FastifyRequest) {
   return {
     ipAddress: request.ip,
     userAgent: request.headers["user-agent"],
+    correlationId: request.correlationId,
   };
 }
 
@@ -142,6 +144,27 @@ export async function logoutController(
   return reply.status(200).send({
     success: true,
     message: "Logout successful",
+  });
+}
+
+export async function logoutAllController(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  if (!request.auth) {
+    throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
+  }
+
+  await logoutAllUserSessions(
+    request.auth.userId,
+    getRequestContext(request)
+  );
+
+  clearRefreshCookie(reply);
+
+  return reply.status(200).send({
+    success: true,
+    message: "All sessions logged out successfully",
   });
 }
 

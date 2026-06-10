@@ -2,6 +2,9 @@ import { PlatformRole, Role } from "@prisma/client";
 
 export type AccessTokenPayload = {
   sub: string;
+  iss: string;
+  aud: string;
+  jti: string;
   email: string;
   role: Role;
   platformRole: PlatformRole;

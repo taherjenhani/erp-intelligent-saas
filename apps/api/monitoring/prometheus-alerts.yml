@@ -1,0 +1,12 @@
+groups:
+  - name: erp-api-auth
+    rules:
+      - alert: EmailOutboxSentUnknown
+        expr: increase(erp_email_outbox_delivery_total{status="sent_unknown"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          service: erp-api
+        annotations:
+          summary: "Email outbox has messages in SENT_UNKNOWN"
+          description: "SMTP accepted an email but the API could not persist the final SENT state. Review EmailOutbox rows with status=SENT_UNKNOWN before retrying to avoid duplicate email delivery."

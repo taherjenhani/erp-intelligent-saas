@@ -5,12 +5,13 @@ import { ZodError } from "zod";
 import { AppError } from "../lib/errors";
 
 const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
-  app.setErrorHandler((error, _request, reply) => {
+  app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
       return reply.status(400).send({
         success: false,
         code: "VALIDATION_FAILED",
         message: "Validation failed",
+        correlationId: request.correlationId,
         errors: error.issues,
       });
     }
@@ -20,6 +21,7 @@ const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
         success: false,
         code: error.code,
         message: error.message,
+        correlationId: request.correlationId,
       });
     }
 
@@ -33,6 +35,7 @@ const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
         success: false,
         code: "RATE_LIMIT_EXCEEDED",
         message: "Too many requests, please try again later",
+        correlationId: request.correlationId,
       });
     }
 
@@ -42,6 +45,7 @@ const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
       success: false,
       code: "INTERNAL_SERVER_ERROR",
       message: "Internal server error",
+      correlationId: request.correlationId,
     });
   });
 };

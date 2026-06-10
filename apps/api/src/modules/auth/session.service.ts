@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import crypto from "crypto";
 
 import { env } from "../../config/env";
 import { AuthError } from "../../lib/errors";
@@ -38,6 +39,195 @@ type RefreshTokenWithSession = Prisma.RefreshTokenGetPayload<{
   include: typeof refreshTokenSessionInclude;
 }>;
 
+const LOCKOUT_REASONS = ["user_not_found", "invalid_password"];
+
+type LoginLockIdentity = {
+  identityType: "EMAIL" | "IP";
+  identityKey: string;
+  maxFailures: number;
+};
+
+function loginLockIdentities(
+  email: string,
+  context: AuthContextInput
+): LoginLockIdentity[] {
+  return [
+    {
+      identityType: "EMAIL",
+      identityKey: email,
+      maxFailures: env.LOGIN_ATTEMPT_EMAIL_MAX,
+    },
+    ...(context.ipAddress
+      ? [
+          {
+            identityType: "IP" as const,
+            identityKey: context.ipAddress,
+            maxFailures: env.LOGIN_ATTEMPT_IP_MAX,
+          },
+        ]
+      : []),
+  ];
+}
+
+async function recordLoginFailureLock(
+  client: Prisma.TransactionClient,
+  identity: LoginLockIdentity,
+  now: Date
+) {
+  const windowStart = new Date(
+    now.getTime() - env.LOGIN_ATTEMPT_WINDOW_MS
+  );
+  const lockedUntil = new Date(
+    now.getTime() + env.LOGIN_ATTEMPT_WINDOW_MS
+  );
+
+  await client.$executeRaw`
+    INSERT INTO "LoginLock" (
+      "id",
+      "identityType",
+      "identityKey",
+      "failedCount",
+      "lockedUntil",
+      "lastFailureAt",
+      "updatedAt"
+    )
+    VALUES (
+      ${crypto.randomUUID()},
+      ${identity.identityType}::"LoginLockIdentityType",
+      ${identity.identityKey},
+      1,
+      CASE WHEN ${identity.maxFailures} <= 1 THEN ${lockedUntil} ELSE NULL END,
+      ${now},
+      ${now}
+    )
+    ON CONFLICT ("identityType", "identityKey") DO UPDATE SET
+      "failedCount" = CASE
+        WHEN "LoginLock"."lastFailureAt" IS NULL
+          OR "LoginLock"."lastFailureAt" < ${windowStart}
+          OR (
+            "LoginLock"."lockedUntil" IS NOT NULL
+            AND "LoginLock"."lockedUntil" < ${now}
+          )
+        THEN 1
+        ELSE "LoginLock"."failedCount" + 1
+      END,
+      "lockedUntil" = CASE
+        WHEN (
+          CASE
+            WHEN "LoginLock"."lastFailureAt" IS NULL
+              OR "LoginLock"."lastFailureAt" < ${windowStart}
+              OR (
+                "LoginLock"."lockedUntil" IS NOT NULL
+                AND "LoginLock"."lockedUntil" < ${now}
+              )
+            THEN 1
+            ELSE "LoginLock"."failedCount" + 1
+          END
+        ) >= ${identity.maxFailures}
+        THEN ${lockedUntil}
+        ELSE NULL
+      END,
+      "lastFailureAt" = ${now},
+      "updatedAt" = ${now}
+  `;
+}
+
+async function resetLoginLocks(
+  client: Prisma.TransactionClient,
+  email: string,
+  context: AuthContextInput
+) {
+  const identities = loginLockIdentities(email, context);
+
+  if (identities.length === 0) {
+    return;
+  }
+
+  await client.loginLock.updateMany({
+    where: {
+      OR: identities.map((identity) => ({
+        identityType: identity.identityType,
+        identityKey: identity.identityKey,
+      })),
+    },
+    data: {
+      failedCount: 0,
+      lockedUntil: null,
+      lastSuccessAt: new Date(),
+    },
+  });
+}
+
+async function recordLoginAttempt(input: {
+  email: string;
+  context: AuthContextInput;
+  success: boolean;
+  reason?: string;
+  userId?: string | null;
+}) {
+  await prisma.$transaction(async (tx) => {
+    await tx.loginAttempt.create({
+      data: {
+        email: input.email,
+        userId: input.userId ?? null,
+        ipAddress: input.context.ipAddress,
+        userAgent: input.context.userAgent,
+        success: input.success,
+        reason: input.reason,
+      },
+    });
+
+    if (input.success) {
+      await resetLoginLocks(tx, input.email, input.context);
+      return;
+    }
+
+    if (!input.reason || !LOCKOUT_REASONS.includes(input.reason)) {
+      return;
+    }
+
+    const now = new Date();
+
+    for (const identity of loginLockIdentities(
+      input.email,
+      input.context
+    )) {
+      await recordLoginFailureLock(tx, identity, now);
+    }
+  });
+}
+
+async function assertLoginNotLocked(
+  email: string,
+  context: AuthContextInput
+) {
+  const identities = loginLockIdentities(email, context);
+  const now = new Date();
+  const locks = await prisma.loginLock.findMany({
+    where: {
+      OR: identities.map((identity) => ({
+        identityType: identity.identityType,
+        identityKey: identity.identityKey,
+        lockedUntil: {
+          gt: now,
+        },
+      })),
+    },
+    select: {
+      id: true,
+    },
+    take: 1,
+  });
+
+  if (locks.length > 0) {
+    throw new AuthError(
+      "AUTH_TOO_MANY_ATTEMPTS",
+      "Too many login attempts, please try again later",
+      429
+    );
+  }
+}
+
 async function revokeTokenFamily(familyId: string, sessionId: string) {
   await prisma.$transaction([
     prisma.refreshToken.updateMany({
@@ -67,23 +257,24 @@ function isSameRefreshContext(
   },
   context: AuthContextInput
 ) {
-  if (
-    session.userAgent &&
-    context.userAgent &&
-    session.userAgent !== context.userAgent
-  ) {
+  if (session.userAgent && session.userAgent !== context.userAgent) {
     return false;
   }
 
-  if (
-    session.ipAddress &&
-    context.ipAddress &&
-    session.ipAddress !== context.ipAddress
-  ) {
+  if (session.ipAddress && session.ipAddress !== context.ipAddress) {
     return false;
   }
 
   return true;
+}
+
+function refreshContextHash(context: AuthContextInput) {
+  return crypto
+    .createHash("sha256")
+    .update(context.userAgent ?? "")
+    .update("\0")
+    .update(context.ipAddress ?? "")
+    .digest("hex");
 }
 
 function isWithinRefreshReuseGrace(rotatedAt: Date | null) {
@@ -104,6 +295,7 @@ function canUseRefreshReuseGrace(
 ) {
   return (
     Boolean(token.replacedByTokenId) &&
+    !token.graceConsumedAt &&
     isWithinRefreshReuseGrace(token.rotatedAt) &&
     isSameRefreshContext(token.session, context) &&
     token.expiresAt > now &&
@@ -113,14 +305,79 @@ function canUseRefreshReuseGrace(
   );
 }
 
+function canIgnoreSameContextRefreshReplay(
+  token: RefreshTokenWithSession,
+  context: AuthContextInput,
+  now: Date
+) {
+  return (
+    Boolean(token.replacedByTokenId) &&
+    Boolean(token.graceConsumedAt) &&
+    isWithinRefreshReuseGrace(token.rotatedAt) &&
+    isSameRefreshContext(token.session, context) &&
+    token.expiresAt > now &&
+    token.session.expiresAt > now &&
+    token.session.status === "ACTIVE" &&
+    token.session.user.isActive
+  );
+}
+
+async function throwIfSameContextRefreshReplay(
+  tokenId: string,
+  context: AuthContextInput,
+  now: Date
+) {
+  const token = await prisma.refreshToken.findUnique({
+    where: {
+      id: tokenId,
+    },
+    include: refreshTokenSessionInclude,
+  });
+
+  if (!token || !canIgnoreSameContextRefreshReplay(token, context, now)) {
+    return;
+  }
+
+  await writeAuthAudit(
+    "REFRESH_TOKEN",
+    context,
+    token.session.userId,
+    {
+      sessionId: token.sessionId,
+      sameContextReplaySuppressed: true,
+    }
+  );
+
+  throw new AuthError(
+    "AUTH_REFRESH_ALREADY_ROTATED",
+    "Refresh token was already rotated",
+    409
+  );
+}
+
 async function createGraceRefreshResult(
   token: RefreshTokenWithSession,
   context: AuthContextInput
 ) {
+  const now = new Date();
   const concurrentRefreshToken = await createRefreshTokenRecord(
     token.familyId
   );
   const session = await prisma.$transaction(async (tx) => {
+    const consumedGrace = await tx.refreshToken.updateMany({
+      where: {
+        id: token.id,
+        graceConsumedAt: null,
+      },
+      data: {
+        graceConsumedAt: now,
+      },
+    });
+
+    if (consumedGrace.count !== 1) {
+      return null;
+    }
+
     await tx.refreshToken.create({
       data: {
         ...concurrentRefreshToken.record,
@@ -137,6 +394,24 @@ async function createGraceRefreshResult(
       },
     });
   });
+
+  if (!session) {
+    await throwIfSameContextRefreshReplay(token.id, context, now);
+    await revokeTokenFamily(token.familyId, token.sessionId);
+    await writeAuthAudit(
+      "TOKEN_REUSE_DETECTED",
+      context,
+      token.session.userId,
+      {
+        sessionId: token.sessionId,
+        reason: "refresh_grace_already_consumed",
+      }
+    );
+    throw new AuthError(
+      "AUTH_REFRESH_TOKEN_REUSED",
+      "Refresh token reuse detected"
+    );
+  }
 
   await writeAuthAudit(
     "REFRESH_TOKEN",
@@ -184,6 +459,8 @@ export async function loginUser(
 ) {
   const normalizedEmail = data.email.trim().toLowerCase();
 
+  await assertLoginNotLocked(normalizedEmail, context);
+
   const user = await prisma.user.findUnique({
     where: { email: normalizedEmail },
     include: {
@@ -197,6 +474,12 @@ export async function loginUser(
   });
 
   if (!user) {
+    await recordLoginAttempt({
+      email: normalizedEmail,
+      context,
+      success: false,
+      reason: "user_not_found",
+    });
     await writeAuthAudit("LOGIN_FAILED", context, null, {
       email: normalizedEmail,
     });
@@ -207,6 +490,13 @@ export async function loginUser(
   }
 
   if (!user.isActive) {
+    await recordLoginAttempt({
+      email: normalizedEmail,
+      context,
+      success: false,
+      reason: "account_disabled",
+      userId: user.id,
+    });
     await writeAuthAudit("LOGIN_FAILED", context, user.id, {
       reason: "account_disabled",
     });
@@ -223,6 +513,13 @@ export async function loginUser(
   );
 
   if (!isPasswordValid) {
+    await recordLoginAttempt({
+      email: normalizedEmail,
+      context,
+      success: false,
+      reason: "invalid_password",
+      userId: user.id,
+    });
     await writeAuthAudit("LOGIN_FAILED", context, user.id, {
       reason: "invalid_password",
     });
@@ -233,6 +530,13 @@ export async function loginUser(
   }
 
   if (!user.emailVerifiedAt) {
+    await recordLoginAttempt({
+      email: normalizedEmail,
+      context,
+      success: false,
+      reason: "email_not_verified",
+      userId: user.id,
+    });
     await writeAuthAudit("LOGIN_FAILED", context, user.id, {
       reason: "email_not_verified",
     });
@@ -257,6 +561,12 @@ export async function loginUser(
   });
 
   await writeAuthAudit("LOGIN_SUCCESS", context, user.id);
+  await recordLoginAttempt({
+    email: normalizedEmail,
+    context,
+    success: true,
+    userId: user.id,
+  });
 
   return {
     refreshToken: refreshToken.refreshToken,
@@ -292,6 +602,12 @@ export async function refreshSession(
     if (canUseRefreshReuseGrace(matchedToken, context, now)) {
       return createGraceRefreshResult(matchedToken, context);
     }
+
+    await throwIfSameContextRefreshReplay(
+      matchedToken.id,
+      context,
+      now
+    );
 
     await revokeTokenFamily(
       matchedToken.familyId,
@@ -371,6 +687,16 @@ export async function refreshSession(
       },
     });
 
+    await tx.refreshRotation.create({
+      data: {
+        previousRefreshTokenId: matchedToken.id,
+        rotatedRefreshTokenId: createdRefreshToken.id,
+        sessionId: matchedToken.sessionId,
+        familyId: matchedToken.familyId,
+        contextHash: refreshContextHash(context),
+      },
+    });
+
     return tx.session.update({
       where: {
         id: matchedToken.sessionId,
@@ -391,6 +717,12 @@ export async function refreshSession(
     if (graceRefresh) {
       return graceRefresh;
     }
+
+    await throwIfSameContextRefreshReplay(
+      matchedToken.id,
+      context,
+      now
+    );
 
     await revokeTokenFamily(
       matchedToken.familyId,
@@ -469,4 +801,36 @@ export async function logoutUser(
     context,
     matchedToken.session.userId
   );
+}
+
+export async function logoutAllUserSessions(
+  userId: string,
+  context: AuthContextInput = {}
+) {
+  await prisma.$transaction([
+    prisma.session.updateMany({
+      where: {
+        userId,
+        status: "ACTIVE",
+      },
+      data: {
+        status: "REVOKED",
+      },
+    }),
+    prisma.refreshToken.updateMany({
+      where: {
+        session: {
+          userId,
+        },
+        revokedAt: null,
+      },
+      data: {
+        revokedAt: new Date(),
+      },
+    }),
+  ]);
+
+  await writeAuthAudit("LOGOUT", context, userId, {
+    allSessions: true,
+  });
 }

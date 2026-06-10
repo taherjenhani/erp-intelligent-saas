@@ -3,6 +3,7 @@ import type { PlatformRole, Role } from "@prisma/client";
 export type AuthContextInput = {
   ipAddress?: string | null;
   userAgent?: string | null;
+  correlationId?: string | null;
 };
 
 export type PublicUserRecord = {

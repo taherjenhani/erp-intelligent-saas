@@ -5,15 +5,20 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "tsx --test src/app.test.ts src/config/env.test.ts src/modules/auth/auth.schema.test.ts",
+    "test": "tsx --test src/app.test.ts src/config/env.test.ts src/lib/email.test.ts src/lib/metrics.test.ts src/modules/auth/auth.schema.test.ts",
     "test:integration": "tsx --test src/modules/auth/auth.integration.test.ts",
     "tokens:cleanup": "tsx src/jobs/cleanupTokens.ts",
-    "email:outbox": "tsx src/jobs/processEmailOutbox.ts"
+    "email:outbox": "tsx src/jobs/processEmailOutbox.ts",
+    "email:outbox:encrypt-legacy": "tsx src/jobs/encryptEmailOutboxLegacy.ts",
+    "email:outbox:rotate-key": "tsx src/jobs/rotateEmailOutboxKey.ts",
+    "tenant:preflight": "tsx src/jobs/preflightTenantMigration.ts",
+    "tenant:backfill-stores": "tsx src/jobs/backfillStoreOrganizations.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.2.0",
     "@fastify/csrf-protection": "^7.1.0",
+    "@fastify/helmet": "^13.0.2",
     "@fastify/jwt": "^10.1.0",
     "@fastify/rate-limit": "^10.3.0",
     "@prisma/adapter-pg": "^7.8.0",

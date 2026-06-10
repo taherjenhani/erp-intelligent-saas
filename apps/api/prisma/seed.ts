@@ -1,6 +1,19 @@
-import { PrismaClient, Role } from "@prisma/client";
+import "dotenv/config";
 
-const prisma = new PrismaClient();
+import { PrismaClient, Role } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { Pool } from "pg";
+
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL is required to seed the database");
+}
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+const prisma = new PrismaClient({
+  adapter: new PrismaPg(pool),
+});
 
 const permissions = [
   "stores.read",
@@ -66,9 +79,11 @@ async function main() {
 main()
   .then(async () => {
     await prisma.$disconnect();
+    await pool.end();
   })
   .catch(async (error) => {
     console.error(error);
     await prisma.$disconnect();
+    await pool.end();
     process.exit(1);
   });

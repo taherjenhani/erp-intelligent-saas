@@ -48,7 +48,13 @@ enum EmailStatus {
   PENDING
   PROCESSING
   SENT
+  SENT_UNKNOWN
   FAILED
+}
+
+enum LoginLockIdentityType {
+  EMAIL
+  IP
 }
 
 model User {
@@ -66,6 +72,7 @@ model User {
   memberships   Membership[]
   auditLogs     AuditLog[]
   authTokens    AuthToken[]
+  loginAttempts LoginAttempt[]
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -98,8 +105,8 @@ model Store {
   address  String?
   isActive Boolean @default(true)
 
-  organizationId String?
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Restrict)
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
 
   warehouses   Warehouse[]
   userAccesses UserStoreAccess[]
@@ -225,6 +232,7 @@ model RefreshToken {
 
   revokedAt         DateTime?
   rotatedAt         DateTime?
+  graceConsumedAt   DateTime?
   replacedByTokenId String?
   expiresAt         DateTime
   createdAt         DateTime  @default(now())
@@ -232,7 +240,24 @@ model RefreshToken {
   @@index([sessionId])
   @@index([familyId])
   @@index([replacedByTokenId])
+  @@index([graceConsumedAt])
   @@index([revokedAt, expiresAt])
+}
+
+model RefreshRotation {
+  id String @id @default(cuid())
+
+  previousRefreshTokenId String @unique
+  rotatedRefreshTokenId  String
+  sessionId              String
+  familyId               String
+  contextHash            String
+
+  createdAt DateTime @default(now())
+
+  @@index([familyId])
+  @@index([sessionId])
+  @@index([contextHash, createdAt])
 }
 
 model AuthToken {
@@ -259,38 +284,88 @@ model AuditLog {
   userId String?
   user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
-  action    AuditAction
-  ipAddress String?
-  userAgent String?
-  metadata  Json?
+  action        AuditAction
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  metadata      Json?
 
   createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([action])
+  @@index([correlationId])
   @@index([createdAt])
+}
+
+model LoginAttempt {
+  id String @id @default(cuid())
+
+  email String
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  ipAddress String?
+  userAgent String?
+  success   Boolean @default(false)
+  reason    String?
+
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ipAddress, createdAt])
+  @@index([userId, createdAt])
+  @@index([success, createdAt])
+}
+
+model LoginLock {
+  id String @id @default(cuid())
+
+  identityType LoginLockIdentityType
+  identityKey  String
+
+  failedCount   Int       @default(0)
+  lockedUntil   DateTime?
+  lastFailureAt DateTime?
+  lastSuccessAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([identityType, identityKey])
+  @@index([lockedUntil])
+  @@index([identityType, lockedUntil])
 }
 
 model EmailOutbox {
   id String @id @default(cuid())
 
-  to      String
-  subject String
-  text    String
-  html    String
+  messageId String @unique
+  to        String
+  subject   String
+  text      String
+  html      String
 
-  status        EmailStatus @default(PENDING)
-  attempts      Int         @default(0)
-  lastError     String?
-  nextAttemptAt DateTime    @default(now())
-  lockedAt      DateTime?
-  lockedBy      String?
-  sentAt        DateTime?
+  status            EmailStatus @default(PENDING)
+  attempts          Int         @default(0)
+  lastError         String?
+  lastErrorSource   String?
+  providerMessageId String?
+  encryptionKeyId   String?
+  nextAttemptAt     DateTime    @default(now())
+  lockedAt          DateTime?
+  lockedBy          String?
+  sentAt            DateTime?
+  sentUnknownAt     DateTime?
+  encryptedAt       DateTime?
+  scrubbedAt        DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([status, nextAttemptAt])
   @@index([lockedAt])
+  @@index([encryptionKeyId])
   @@index([createdAt])
 }

@@ -29,6 +29,18 @@ test("registerSchema rejects weak passwords", () => {
   assert.equal(result.success, false);
 });
 
+test("auth schemas reject unknown fields", () => {
+  const result = registerSchema.safeParse({
+    firstName: "Taher",
+    lastName: "Jenhani",
+    email: "taher@example.com",
+    password: "StrongPass1!",
+    role: "SUPER_ADMIN",
+  });
+
+  assert.equal(result.success, false);
+});
+
 test("changePasswordSchema requires a different new password", () => {
   const result = changePasswordSchema.safeParse({
     currentPassword: "StrongPass1!",

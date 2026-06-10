@@ -1,5 +1,6 @@
 import csrfProtection from "@fastify/csrf-protection";
 import cors from "@fastify/cors";
+import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
@@ -15,15 +16,30 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
   const redis = env.RATE_LIMIT_REDIS_URL
     ? new Redis(env.RATE_LIMIT_REDIS_URL, {
         keyPrefix: "erp-api:rate-limit:",
+        enableOfflineQueue: false,
+        lazyConnect: true,
         maxRetriesPerRequest: 1,
       })
     : undefined;
 
   if (redis) {
+    try {
+      await redis.connect();
+      await redis.ping();
+    } catch (error) {
+      redis.disconnect();
+      app.log.error(error, "Redis rate-limit store is unavailable");
+      throw error;
+    }
+
     app.addHook("onClose", async () => {
       redis.disconnect();
     });
   }
+
+  await app.register(helmet, {
+    contentSecurityPolicy: false,
+  });
 
   await app.register(cors, {
     origin: (origin, callback) => {

@@ -1,6 +1,7 @@
 import bcrypt from "bcrypt";
 import crypto from "crypto";
 import { env } from "../config/env";
+import { isLegacySecretFallbackEnabled } from "./legacySecrets";
 
 const SALT_ROUNDS = 12;
 
@@ -25,6 +26,10 @@ export async function verifyPassword(
 ): Promise<boolean> {
   if (await bcrypt.compare(passwordDigest(password), hashedPassword)) {
     return true;
+  }
+
+  if (!isLegacySecretFallbackEnabled()) {
+    return false;
   }
 
   return bcrypt.compare(

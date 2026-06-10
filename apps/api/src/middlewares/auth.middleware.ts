@@ -4,6 +4,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { writeAuditLog } from "../lib/audit";
 import { AuthError } from "../lib/errors";
 import { prisma } from "../lib/prisma";
+import { env } from "../config/env";
 
 export type AuthContext = {
   userId: string;
@@ -24,8 +25,19 @@ export async function requireAuth(
   try {
     const payload = await request.jwtVerify<{
       sub: string;
+      iss?: string;
+      aud?: string;
+      jti?: string;
       sessionId: string;
     }>();
+
+    if (
+      payload.iss !== env.JWT_ISSUER ||
+      payload.aud !== env.JWT_AUDIENCE ||
+      !payload.jti
+    ) {
+      throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
+    }
 
     const session = await prisma.session.findUnique({
       where: { id: payload.sessionId },
@@ -106,6 +118,7 @@ export async function requireAuth(
       action: "ACCESS_DENIED",
       ipAddress: request.ip,
       userAgent: request.headers["user-agent"],
+      correlationId: request.correlationId,
       metadata: {
         path: request.url,
       },
