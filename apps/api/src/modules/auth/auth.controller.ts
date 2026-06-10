@@ -29,6 +29,32 @@ import {
   verifyEmail,
 } from "./auth.service";
 
+const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{8,128}$/;
+
+function getSingleHeaderValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function getRefreshIdempotencyKey(request: FastifyRequest) {
+  const value =
+    getSingleHeaderValue(request.headers["idempotency-key"]) ??
+    getSingleHeaderValue(request.headers["x-idempotency-key"]);
+
+  if (!value) {
+    return null;
+  }
+
+  if (!IDEMPOTENCY_KEY_PATTERN.test(value)) {
+    throw new AuthError(
+      "VALIDATION_FAILED",
+      "Invalid idempotency key",
+      400
+    );
+  }
+
+  return value;
+}
+
 function getRequestContext(request: FastifyRequest) {
   return {
     ipAddress: request.ip,
@@ -118,7 +144,10 @@ export async function refreshController(
 
   const result = await refreshSession(
     refreshToken,
-    getRequestContext(request)
+    {
+      ...getRequestContext(request),
+      idempotencyKey: getRefreshIdempotencyKey(request),
+    }
   );
 
   return sendAuthResult(

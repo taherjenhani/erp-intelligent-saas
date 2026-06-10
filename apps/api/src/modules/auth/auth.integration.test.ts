@@ -119,9 +119,27 @@ test("auth routes register, verify, login and return /me", async (t) => {
 
     assert.equal(meResponse.statusCode, 200);
     assert.equal(meResponse.json().data.email, email);
+
+    const loginSecurityEvent = await prisma.securityEvent.findFirst({
+      where: {
+        type: "LOGIN_SUCCESS",
+        user: {
+          email,
+        },
+      },
+    });
+
+    assert.equal(Boolean(loginSecurityEvent), true);
   } finally {
     await prisma.emailOutbox.deleteMany({
       where: { to: email },
+    });
+    await prisma.securityEvent.deleteMany({
+      where: {
+        user: {
+          email,
+        },
+      },
     });
     await prisma.user.deleteMany({
       where: { email },
@@ -238,9 +256,52 @@ test("password reset token cannot be reused", async (t) => {
       reusedResetResponse.json().code,
       "AUTH_INVALID_RESET_TOKEN"
     );
+
+    const secondForgotCsrf = await getCsrf(app);
+    const secondForgotResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/forgot-password",
+      headers: {
+        cookie: secondForgotCsrf.cookie,
+        "x-csrf-token": secondForgotCsrf.csrfToken,
+      },
+      payload: {
+        email,
+      },
+    });
+
+    assert.equal(secondForgotResponse.statusCode, 200);
+
+    const secondResetToken = secondForgotResponse.json().data.resetToken;
+    const reusedOldPasswordCsrf = await getCsrf(app);
+    const reusedOldPasswordResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/reset-password",
+      headers: {
+        cookie: reusedOldPasswordCsrf.cookie,
+        "x-csrf-token": reusedOldPasswordCsrf.csrfToken,
+      },
+      payload: {
+        token: secondResetToken,
+        password,
+      },
+    });
+
+    assert.equal(reusedOldPasswordResponse.statusCode, 400);
+    assert.equal(
+      reusedOldPasswordResponse.json().code,
+      "AUTH_PASSWORD_REUSED"
+    );
   } finally {
     await prisma.emailOutbox.deleteMany({
       where: { to: email },
+    });
+    await prisma.securityEvent.deleteMany({
+      where: {
+        user: {
+          email,
+        },
+      },
     });
     await prisma.user.deleteMany({
       where: { email },
@@ -327,6 +388,7 @@ test("concurrent refresh requests are idempotent", async (t) => {
     const cookie = [refreshCookie, refreshCsrf.cookie]
       .filter(Boolean)
       .join("; ");
+    const idempotencyKey = `refresh-${Date.now()}-key`;
 
     const refreshRequest = () =>
       app.inject({
@@ -335,6 +397,7 @@ test("concurrent refresh requests are idempotent", async (t) => {
         headers: {
           cookie,
           "x-csrf-token": refreshCsrf.csrfToken,
+          "idempotency-key": idempotencyKey,
         },
       });
 
@@ -352,6 +415,10 @@ test("concurrent refresh requests are idempotent", async (t) => {
     assert.equal(
       typeof secondRefresh.json().data.accessToken,
       "string"
+    );
+    assert.equal(
+      getCookieHeader(firstRefresh.headers["set-cookie"]),
+      getCookieHeader(secondRefresh.headers["set-cookie"])
     );
   } finally {
     await prisma.emailOutbox.deleteMany({

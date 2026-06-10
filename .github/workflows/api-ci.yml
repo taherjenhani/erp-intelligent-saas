@@ -37,6 +37,7 @@ jobs:
       JWT_ACCESS_SECRET: test_access_secret_minimum_32_characters
       PASSWORD_PEPPER: test_password_pepper_minimum_32_chars
       TOKEN_HASH_SECRET: test_token_hash_secret_minimum_32_chars
+      REFRESH_IDEMPOTENCY_SECRET: test_refresh_idempotency_secret_minimum_32_chars
       EMAIL_OUTBOX_ENCRYPTION_KEY_ID: ci-key
       EMAIL_OUTBOX_ENCRYPTION_KEY: test_email_outbox_encryption_key_minimum_32_chars
       EMAIL_OUTBOX_ENCRYPTION_KEYS: '{"ci-key":"test_email_outbox_encryption_key_minimum_32_chars"}'
@@ -54,6 +55,7 @@ jobs:
           cache-dependency-path: apps/api/package-lock.json
 
       - run: npm ci
+      - run: npm run audit:ci
       - run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE erp_saas_shadow;"
       - run: npx prisma migrate deploy
       - run: npx prisma db seed

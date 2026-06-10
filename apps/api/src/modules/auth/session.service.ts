@@ -40,6 +40,7 @@ type RefreshTokenWithSession = Prisma.RefreshTokenGetPayload<{
 }>;
 
 const LOCKOUT_REASONS = ["user_not_found", "invalid_password"];
+const REFRESH_IDEMPOTENCY_VALUE_PREFIX = "enc:v1:";
 
 type LoginLockIdentity = {
   identityType: "EMAIL" | "IP";
@@ -275,6 +276,137 @@ function refreshContextHash(context: AuthContextInput) {
     .update("\0")
     .update(context.ipAddress ?? "")
     .digest("hex");
+}
+
+function refreshIdempotencyKeyHash(context: AuthContextInput) {
+  if (!context.idempotencyKey) {
+    return null;
+  }
+
+  return crypto
+    .createHmac("sha256", env.REFRESH_IDEMPOTENCY_SECRET)
+    .update(context.idempotencyKey)
+    .digest("hex");
+}
+
+function refreshIdempotencyEncryptionKey() {
+  return crypto
+    .createHash("sha256")
+    .update(env.REFRESH_IDEMPOTENCY_SECRET)
+    .digest();
+}
+
+function encryptRefreshIdempotencyValue(value: string) {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv(
+    "aes-256-gcm",
+    refreshIdempotencyEncryptionKey(),
+    iv
+  );
+  const encrypted = Buffer.concat([
+    cipher.update(value, "utf8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+
+  return `${REFRESH_IDEMPOTENCY_VALUE_PREFIX}${Buffer.concat([
+    iv,
+    tag,
+    encrypted,
+  ]).toString("base64url")}`;
+}
+
+function decryptRefreshIdempotencyValue(value: string) {
+  if (!value.startsWith(REFRESH_IDEMPOTENCY_VALUE_PREFIX)) {
+    throw new Error("Invalid refresh idempotency payload");
+  }
+
+  const payload = Buffer.from(
+    value.slice(REFRESH_IDEMPOTENCY_VALUE_PREFIX.length),
+    "base64url"
+  );
+  const iv = payload.subarray(0, 12);
+  const tag = payload.subarray(12, 28);
+  const encrypted = payload.subarray(28);
+  const decipher = crypto.createDecipheriv(
+    "aes-256-gcm",
+    refreshIdempotencyEncryptionKey(),
+    iv
+  );
+
+  decipher.setAuthTag(tag);
+
+  return Buffer.concat([
+    decipher.update(encrypted),
+    decipher.final(),
+  ]).toString("utf8");
+}
+
+async function tryReplayRefreshIdempotencyResult(
+  token: RefreshTokenWithSession,
+  context: AuthContextInput,
+  now: Date
+) {
+  const idempotencyKeyHash = refreshIdempotencyKeyHash(context);
+
+  if (!idempotencyKeyHash) {
+    return null;
+  }
+
+  const rotation = await prisma.refreshRotation.findFirst({
+    where: {
+      previousRefreshTokenId: token.id,
+      idempotencyKeyHash,
+      contextHash: refreshContextHash(context),
+      idempotencyExpiresAt: {
+        gt: now,
+      },
+      responseRefreshToken: {
+        not: null,
+      },
+    },
+  });
+
+  if (!rotation?.responseRefreshToken) {
+    return null;
+  }
+
+  const activeRotatedToken = await prisma.refreshToken.findUnique({
+    where: {
+      id: rotation.rotatedRefreshTokenId,
+    },
+    include: refreshTokenSessionInclude,
+  });
+
+  if (
+    !activeRotatedToken ||
+    activeRotatedToken.revokedAt ||
+    activeRotatedToken.expiresAt <= now ||
+    activeRotatedToken.sessionId !== token.sessionId ||
+    activeRotatedToken.session.status !== "ACTIVE" ||
+    activeRotatedToken.session.expiresAt <= now ||
+    !activeRotatedToken.session.user.isActive
+  ) {
+    return null;
+  }
+
+  await writeAuthAudit(
+    "REFRESH_TOKEN",
+    context,
+    activeRotatedToken.session.userId,
+    {
+      sessionId: activeRotatedToken.sessionId,
+      idempotencyReplay: true,
+    }
+  );
+
+  return {
+    refreshToken: decryptRefreshIdempotencyValue(
+      rotation.responseRefreshToken
+    ),
+    session: activeRotatedToken.session,
+    user: toPublicUser(activeRotatedToken.session.user),
+  };
 }
 
 function isWithinRefreshReuseGrace(rotatedAt: Date | null) {
@@ -599,6 +731,17 @@ export async function refreshSession(
   const now = new Date();
 
   if (matchedToken.revokedAt) {
+    const idempotencyReplay =
+      await tryReplayRefreshIdempotencyResult(
+        matchedToken,
+        context,
+        now
+      );
+
+    if (idempotencyReplay) {
+      return idempotencyReplay;
+    }
+
     if (canUseRefreshReuseGrace(matchedToken, context, now)) {
       return createGraceRefreshResult(matchedToken, context);
     }
@@ -651,6 +794,7 @@ export async function refreshSession(
   const newRefreshToken = await createRefreshTokenRecord(
     matchedToken.familyId
   );
+  const idempotencyKeyHash = refreshIdempotencyKeyHash(context);
 
   const session = await prisma.$transaction(async (tx) => {
     const updatedToken = await tx.refreshToken.updateMany({
@@ -694,6 +838,17 @@ export async function refreshSession(
         sessionId: matchedToken.sessionId,
         familyId: matchedToken.familyId,
         contextHash: refreshContextHash(context),
+        idempotencyKeyHash,
+        responseRefreshToken: idempotencyKeyHash
+          ? encryptRefreshIdempotencyValue(
+              newRefreshToken.refreshToken
+            )
+          : undefined,
+        idempotencyExpiresAt: idempotencyKeyHash
+          ? new Date(
+              now.getTime() + env.REFRESH_IDEMPOTENCY_TTL_MS
+            )
+          : undefined,
       },
     });
 

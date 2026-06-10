@@ -5,6 +5,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "audit:ci": "npm audit --audit-level=high",
     "test": "tsx --test src/app.test.ts src/config/env.test.ts src/lib/email.test.ts src/lib/metrics.test.ts src/modules/auth/auth.schema.test.ts",
     "test:integration": "tsx --test src/modules/auth/auth.integration.test.ts",
     "tokens:cleanup": "tsx src/jobs/cleanupTokens.ts",

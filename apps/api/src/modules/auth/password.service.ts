@@ -7,6 +7,11 @@ import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
 import { hashPassword, verifyPassword } from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
+import {
+  findPasswordResetUser,
+  findUserPasswordById,
+  updatePasswordAndRevokeOtherSessions,
+} from "./auth.repository";
 import { consumeAuthToken, createAuthToken } from "./auth-token.service";
 import type {
   ChangePasswordInput,
@@ -14,22 +19,17 @@ import type {
   ResetPasswordInput,
 } from "./auth.schema";
 import type { AuthContextInput } from "./auth.types";
+import {
+  assertPasswordNotRecentlyUsed,
+  rememberPassword,
+} from "./password-history.service";
 
 export async function requestPasswordReset(
   data: RequestPasswordResetInput,
   context: AuthContextInput = {}
 ) {
   const email = data.email.trim().toLowerCase();
-  const user = await prisma.user.findUnique({
-    where: {
-      email,
-    },
-    select: {
-      id: true,
-      email: true,
-      isActive: true,
-    },
-  });
+  const user = await findPasswordResetUser(email);
 
   if (!user || !user.isActive) {
     return {
@@ -94,37 +94,33 @@ export async function resetPassword(
       "AUTH_INVALID_RESET_TOKEN",
       tx
     );
+    const user = await findUserPasswordById(
+      consumedToken.userId,
+      tx
+    );
 
-    await tx.user.update({
-      where: {
-        id: consumedToken.userId,
-      },
-      data: {
+    if (!user) {
+      throw new AuthError(
+        "AUTH_INVALID_RESET_TOKEN",
+        "Invalid or expired token"
+      );
+    }
+
+    await assertPasswordNotRecentlyUsed(
+      consumedToken.userId,
+      data.password,
+      user.password,
+      tx
+    );
+
+    await updatePasswordAndRevokeOtherSessions(
+      {
+        userId: consumedToken.userId,
         password,
-        sessions: {
-          updateMany: {
-            where: {
-              status: "ACTIVE",
-            },
-            data: {
-              status: "REVOKED",
-            },
-          },
-        },
       },
-    });
-
-    await tx.refreshToken.updateMany({
-      where: {
-        session: {
-          userId: consumedToken.userId,
-        },
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: new Date(),
-      },
-    });
+      tx
+    );
+    await rememberPassword(consumedToken.userId, password, tx);
 
     return consumedToken;
   });
@@ -142,15 +138,7 @@ export async function changePassword(
   data: ChangePasswordInput,
   context: AuthContextInput = {}
 ) {
-  const user = await prisma.user.findUnique({
-    where: {
-      id: userId,
-    },
-    select: {
-      id: true,
-      password: true,
-    },
-  });
+  const user = await findUserPasswordById(userId);
 
   if (!user) {
     throw new AuthError("AUTH_UNAUTHORIZED", "Unauthorized");
@@ -168,45 +156,23 @@ export async function changePassword(
     );
   }
 
+  await assertPasswordNotRecentlyUsed(
+    user.id,
+    data.newPassword,
+    user.password
+  );
+
   const password = await hashPassword(data.newPassword);
-
   await prisma.$transaction(async (tx) => {
-    await tx.user.update({
-      where: {
-        id: user.id,
-      },
-      data: {
-        password,
-      },
-    });
-
-    await tx.session.updateMany({
-      where: {
+    await updatePasswordAndRevokeOtherSessions(
+      {
         userId: user.id,
-        id: {
-          not: currentSessionId,
-        },
-        status: "ACTIVE",
+        password,
+        keepSessionId: currentSessionId,
       },
-      data: {
-        status: "REVOKED",
-      },
-    });
-
-    await tx.refreshToken.updateMany({
-      where: {
-        session: {
-          userId: user.id,
-          id: {
-            not: currentSessionId,
-          },
-        },
-        revokedAt: null,
-      },
-      data: {
-        revokedAt: new Date(),
-      },
-    });
+      tx
+    );
+    await rememberPassword(user.id, password, tx);
   });
 
   await writeAuthAudit("PASSWORD_CHANGED", context, user.id, {

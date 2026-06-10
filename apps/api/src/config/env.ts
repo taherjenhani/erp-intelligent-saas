@@ -8,6 +8,8 @@ const DEVELOPMENT_TOKEN_HASH_SECRET =
 const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY =
   "development-email-outbox-encryption-key-change-before-prod";
 const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY_ID = "local-dev";
+const DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET =
+  "development-refresh-idempotency-secret-change-before-prod";
 const DEVELOPMENT_CORS_ORIGIN = "http://localhost:3000";
 const LEGACY_SECRET_FALLBACK_DEADLINE =
   "2026-09-30T00:00:00.000Z";
@@ -129,6 +131,11 @@ const envSchema = z
       .int()
       .positive()
       .default(20),
+    PASSWORD_HISTORY_LIMIT: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(5),
     AUTH_RATE_LIMIT_MAX: z.coerce.number().default(10),
     AUTH_RATE_LIMIT_WINDOW: z.string().default("10 minutes"),
     RATE_LIMIT_REDIS_URL: z.string().url().optional(),
@@ -137,6 +144,11 @@ const envSchema = z
       .number()
       .positive()
       .default(5 * 1000),
+    REFRESH_IDEMPOTENCY_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 1000),
 
     SMTP_HOST: z.string().optional(),
     SMTP_PORT: z.coerce.number().default(587),
@@ -182,6 +194,13 @@ const envSchema = z
       .string()
       .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters")
       .default(DEVELOPMENT_TOKEN_HASH_SECRET),
+    REFRESH_IDEMPOTENCY_SECRET: z
+      .string()
+      .min(
+        32,
+        "REFRESH_IDEMPOTENCY_SECRET must contain at least 32 characters"
+      )
+      .default(DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET),
     LEGACY_SECRET_FALLBACK_UNTIL: z
       .string()
       .refine(
@@ -212,6 +231,18 @@ const envSchema = z
         path: ["TOKEN_HASH_SECRET"],
         message:
           "TOKEN_HASH_SECRET must be different from PASSWORD_PEPPER",
+      });
+    }
+
+    if (
+      env.REFRESH_IDEMPOTENCY_SECRET === env.PASSWORD_PEPPER ||
+      env.REFRESH_IDEMPOTENCY_SECRET === env.TOKEN_HASH_SECRET
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["REFRESH_IDEMPOTENCY_SECRET"],
+        message:
+          "REFRESH_IDEMPOTENCY_SECRET must be different from PASSWORD_PEPPER and TOKEN_HASH_SECRET",
       });
     }
 
@@ -301,6 +332,18 @@ const envSchema = z
         code: "custom",
         path: ["TOKEN_HASH_SECRET"],
         message: "TOKEN_HASH_SECRET must be explicit in production",
+      });
+    }
+
+    if (
+      env.REFRESH_IDEMPOTENCY_SECRET ===
+      DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["REFRESH_IDEMPOTENCY_SECRET"],
+        message:
+          "REFRESH_IDEMPOTENCY_SECRET must be explicit in production",
       });
     }
 

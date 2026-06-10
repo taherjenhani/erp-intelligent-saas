@@ -57,6 +57,58 @@ enum LoginLockIdentityType {
   IP
 }
 
+enum SecurityEventType {
+  REGISTER
+  LOGIN_SUCCESS
+  LOGIN_FAILED
+  LOGOUT
+  REFRESH_TOKEN
+  TOKEN_REUSE_DETECTED
+  ACCESS_DENIED
+  EMAIL_VERIFICATION_REQUESTED
+  EMAIL_VERIFIED
+  PASSWORD_RESET_REQUESTED
+  PASSWORD_RESET_COMPLETED
+  PASSWORD_CHANGED
+  ACCOUNT_LOCKOUT
+  API_KEY_AUTHENTICATED
+  MFA_CHALLENGE_CREATED
+  MFA_CHALLENGE_VERIFIED
+}
+
+enum SecurityEventSeverity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+}
+
+enum MfaFactorType {
+  TOTP
+  WEBAUTHN
+  RECOVERY_CODE
+}
+
+enum MfaFactorStatus {
+  PENDING
+  ACTIVE
+  DISABLED
+}
+
+enum MfaChallengeStatus {
+  PENDING
+  VERIFIED
+  EXPIRED
+  FAILED
+}
+
 model User {
   id           String       @id @default(cuid())
   firstName    String
@@ -67,12 +119,17 @@ model User {
   platformRole PlatformRole @default(USER)
   isActive     Boolean      @default(true)
 
-  sessions      Session[]
-  storeAccesses UserStoreAccess[]
-  memberships   Membership[]
-  auditLogs     AuditLog[]
-  authTokens    AuthToken[]
-  loginAttempts LoginAttempt[]
+  sessions        Session[]
+  storeAccesses   UserStoreAccess[]
+  memberships     Membership[]
+  auditLogs       AuditLog[]
+  authTokens      AuthToken[]
+  loginAttempts   LoginAttempt[]
+  securityEvents  SecurityEvent[]
+  apiKeys         ApiKey[]
+  mfaFactors      MfaFactor[]
+  mfaChallenges   MfaChallenge[]
+  passwordHistory PasswordHistory[]
 
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
@@ -91,6 +148,7 @@ model Organization {
 
   memberships Membership[]
   stores      Store[]
+  apiKeys     ApiKey[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -247,17 +305,22 @@ model RefreshToken {
 model RefreshRotation {
   id String @id @default(cuid())
 
-  previousRefreshTokenId String @unique
+  previousRefreshTokenId String    @unique
   rotatedRefreshTokenId  String
   sessionId              String
   familyId               String
   contextHash            String
+  idempotencyKeyHash     String?
+  responseRefreshToken   String?
+  idempotencyExpiresAt   DateTime?
 
   createdAt DateTime @default(now())
 
   @@index([familyId])
   @@index([sessionId])
+  @@index([previousRefreshTokenId, idempotencyKeyHash])
   @@index([contextHash, createdAt])
+  @@index([idempotencyExpiresAt])
 }
 
 model AuthToken {
@@ -278,6 +341,18 @@ model AuthToken {
   @@index([expiresAt])
 }
 
+model PasswordHistory {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  passwordHash String
+  createdAt    DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
 model AuditLog {
   id String @id @default(cuid())
 
@@ -294,6 +369,28 @@ model AuditLog {
 
   @@index([userId])
   @@index([action])
+  @@index([correlationId])
+  @@index([createdAt])
+}
+
+model SecurityEvent {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  type          SecurityEventType
+  severity      SecurityEventSeverity @default(INFO)
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  metadata      Json?
+
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([type])
+  @@index([severity])
   @@index([correlationId])
   @@index([createdAt])
 }
@@ -317,6 +414,80 @@ model LoginAttempt {
   @@index([ipAddress, createdAt])
   @@index([userId, createdAt])
   @@index([success, createdAt])
+}
+
+model ApiKey {
+  id String @id @default(cuid())
+
+  userId String?
+  user   User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  organizationId String?
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  name      String
+  keyHash   String       @unique
+  keyPrefix String
+  scopes    Json?
+  status    ApiKeyStatus @default(ACTIVE)
+
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([organizationId])
+  @@index([keyPrefix])
+  @@index([status, expiresAt])
+}
+
+model MfaFactor {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type   MfaFactorType
+  status MfaFactorStatus @default(PENDING)
+  label  String?
+
+  secretHash String?
+  publicKey  String?
+
+  lastUsedAt DateTime?
+  disabledAt DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  challenges MfaChallenge[]
+
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+}
+
+model MfaChallenge {
+  id String @id @default(cuid())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  factorId String?
+  factor   MfaFactor? @relation(fields: [factorId], references: [id], onDelete: SetNull)
+
+  type   MfaFactorType
+  status MfaChallengeStatus @default(PENDING)
+
+  challengeHash String?
+  expiresAt     DateTime
+  verifiedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([userId])
+  @@index([factorId])
+  @@index([status, expiresAt])
 }
 
 model LoginLock {

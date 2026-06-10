@@ -1,7 +1,13 @@
-import type { AuditAction, Prisma } from "@prisma/client";
+import type {
+  AuditAction,
+  Prisma,
+  SecurityEventSeverity,
+  SecurityEventType,
+} from "@prisma/client";
 
 import { incrementCounter } from "./metrics";
 import { prisma } from "./prisma";
+import { writeSecurityEvent } from "./securityEvents";
 
 type AuditInput = {
   action: AuditAction;
@@ -34,8 +40,27 @@ function buildAuditMetadata(input: AuditInput) {
   };
 }
 
+function securitySeverityForAction(
+  action: AuditAction
+): SecurityEventSeverity {
+  switch (action) {
+    case "TOKEN_REUSE_DETECTED":
+      return "HIGH";
+    case "ACCESS_DENIED":
+    case "PASSWORD_CHANGED":
+    case "PASSWORD_RESET_COMPLETED":
+      return "MEDIUM";
+    case "LOGIN_FAILED":
+      return "LOW";
+    default:
+      return "INFO";
+  }
+}
+
 export async function writeAuditLog(input: AuditInput) {
   try {
+    const metadata = buildAuditMetadata(input);
+
     await prisma.auditLog.create({
       data: {
         action: input.action,
@@ -43,8 +68,17 @@ export async function writeAuditLog(input: AuditInput) {
         ipAddress: input.ipAddress ?? null,
         userAgent: input.userAgent ?? null,
         correlationId: input.correlationId ?? null,
-        metadata: buildAuditMetadata(input),
+        metadata,
       },
+    });
+    await writeSecurityEvent({
+      type: input.action as SecurityEventType,
+      severity: securitySeverityForAction(input.action),
+      userId: input.userId,
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+      correlationId: input.correlationId,
+      metadata,
     });
     incrementCounter(
       "erp_audit_log_write_total",

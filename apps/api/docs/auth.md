@@ -4,6 +4,7 @@
 
 - Configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `EMAIL_OUTBOX_ENCRYPTION_KEY`, `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, `CSRF_SECRET`, `APP_URL`, `CORS_ORIGIN`, `RATE_LIMIT_REDIS_URL`, `METRICS_TOKEN` when metrics are enabled, and SMTP variables.
 - Keep `PASSWORD_PEPPER` and `TOKEN_HASH_SECRET` different. Password hashes and opaque token hashes must not share the same secret.
+- Keep `REFRESH_IDEMPOTENCY_SECRET` different from password/token secrets. It encrypts short-lived refresh replay responses.
 - Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `SMTP_HOST` is missing, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
 - Run Prisma migrations before starting the API.
 - Before applying `20260610120000_auth_production_hardening`, backfill `Store.organizationId` for every existing store with `npm run tenant:backfill-stores`, then verify with `npm run tenant:preflight`.
@@ -23,6 +24,8 @@ prisma/migrations/20260604103000_auth_multitenant_outbox_hardening/migration.sql
 prisma/migrations/20260604113000_auth_crypto_refresh_platform_hardening/migration.sql
 prisma/migrations/20260610120000_auth_production_hardening/migration.sql
 prisma/migrations/20260610143000_auth_operational_hardening/migration.sql
+prisma/migrations/20260610160000_auth_enterprise_foundation/migration.sql
+prisma/migrations/20260610170000_refresh_idempotency_key/migration.sql
 ```
 
 If the production database is empty, apply migrations normally:
@@ -39,6 +42,8 @@ npx prisma migrate resolve --applied 20260604103000_auth_multitenant_outbox_hard
 npx prisma migrate resolve --applied 20260604113000_auth_crypto_refresh_platform_hardening
 npx prisma migrate resolve --applied 20260610120000_auth_production_hardening
 npx prisma migrate resolve --applied 20260610143000_auth_operational_hardening
+npx prisma migrate resolve --applied 20260610160000_auth_enterprise_foundation
+npx prisma migrate resolve --applied 20260610170000_refresh_idempotency_key
 npx prisma migrate deploy
 ```
 
@@ -144,11 +149,16 @@ Login records append-only `LoginAttempt` rows and applies DB-backed `LoginLock` 
 LOGIN_ATTEMPT_WINDOW_MS=900000
 LOGIN_ATTEMPT_EMAIL_MAX=5
 LOGIN_ATTEMPT_IP_MAX=20
+PASSWORD_HISTORY_LIMIT=5
 ```
+
+`PASSWORD_HISTORY_LIMIT` prevents users from reusing the current password or recently stored password hashes during password reset and password change. Set it to `0` only for local debugging.
 
 ## Observability
 
 Requests accept `x-request-id` and `x-correlation-id` only when the value is short and header-safe. The API echoes safe IDs in responses, includes `correlationId` in error payloads, and stores it in an indexed `AuditLog.correlationId` column.
+Reverse proxies should pass `x-request-id` or `x-correlation-id` from trusted clients only after applying their own length/charset limits. Frontend clients should read `x-correlation-id` from failed responses and attach it to support/error reports.
+Auth audit writes also create normalized `SecurityEvent` rows for SIEM-style querying by type, severity, user, correlation ID, and timestamp.
 
 Metrics are disabled by default. Enable them only for internal scraping. `METRICS_TOKEN` is required whenever `METRICS_ENABLED=true`, including non-production environments:
 
@@ -173,9 +183,12 @@ Current metrics include:
 - `erp_email_outbox_batch_size`
 - `erp_email_outbox_batch_processed`
 - `erp_email_outbox_processed_total`
+- `erp_security_event_total`
 
 Alert on `erp_email_outbox_delivery_total{status="sent_unknown"}`. It means SMTP reported success but the API could not persist the final `SENT` state; retrying those rows manually can send duplicates.
 The Prometheus rule is provided in `apps/api/monitoring/prometheus-alerts.yml`.
+
+In multi-instance deployments these metrics are process-local. Scrape every API instance or export them to Prometheus/OpenTelemetry through the platform collector. Do not use one instance's `/metrics` endpoint as a global source of truth.
 
 ## Tests
 
@@ -185,6 +198,14 @@ Unit and smoke tests:
 npm test
 ```
 
+Supply-chain gate used by CI:
+
+```powershell
+npm run audit:ci
+```
+
+`audit:ci` currently blocks high and critical vulnerabilities. `npm audit --audit-level=moderate` still reports Prisma/Hono advisories without an upstream fix; track them through Dependabot and upgrade Prisma/Hono when patched versions are available.
+
 Integration test with PostgreSQL:
 
 ```powershell
@@ -192,6 +213,7 @@ $env:RUN_DB_TESTS="true"
 $env:NODE_ENV="test"
 $env:DATABASE_URL="postgresql://postgres:postgres@localhost:5432/erp_saas_test"
 $env:TOKEN_HASH_SECRET="test_token_hash_secret_minimum_32_chars"
+$env:REFRESH_IDEMPOTENCY_SECRET="test_refresh_idempotency_secret_minimum_32_chars"
 $env:EMAIL_OUTBOX_ENCRYPTION_KEY="test_email_outbox_encryption_key_minimum_32_chars"
 $env:EXPOSE_AUTH_TOKENS="true"
 npm run test:integration
@@ -229,7 +251,8 @@ npx prisma db seed
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.
 - Refresh token rotation is atomic and revokes the token family when reuse is detected outside the short concurrent refresh grace window.
 - Each normal refresh writes a `RefreshRotation` row for observability and controlled same-context replay handling.
-- Concurrent refresh requests with the same old cookie are treated as idempotent for the same session context during `REFRESH_TOKEN_REUSE_GRACE_MS`, default 5 seconds, and only one grace reissue is allowed.
+- Clients can send `Idempotency-Key` or `x-idempotency-key` on `POST /api/auth/refresh`. For the same old cookie, same context and same key, the API can replay the same rotated refresh cookie for `REFRESH_IDEMPOTENCY_TTL_MS`, default 60 seconds.
+- Concurrent refresh requests without an idempotency key are still tolerated for the same session context during `REFRESH_TOKEN_REUSE_GRACE_MS`, default 5 seconds, and only one grace reissue is allowed.
 - Legacy password/token fallback is bounded by `LEGACY_SECRET_FALLBACK_UNTIL`; plan to remove it after migration.
 - Protected routes reload the user, role and store access from PostgreSQL instead of trusting mutable JWT claims.
 - Auth tokens are consumed atomically so verification/reset links cannot be used twice through concurrent requests.
@@ -248,6 +271,17 @@ When a route contains both `organizationId` and `storeId`, add `requireStoreInOr
 The schema includes `Organization` and `Membership` for multi-tenant ERP boundaries. `Store.organizationId` is mandatory after `20260610120000_auth_production_hardening`. Guards reject inactive stores and inactive organizations.
 
 Use `requireOrganizationRole("organizationId", ["ADMIN"])` or `requireOrganizationPermission("organizationId", "users.write")` on organization-scoped routes.
+
+## Enterprise Auth Foundation
+
+The schema includes foundational enterprise tables that are intentionally not exposed through public routes until product rules are defined:
+
+- `SecurityEvent`: normalized auth/security event stream for SIEM, alerting and incident search.
+- `PasswordHistory`: recent password hashes used to prevent password reuse.
+- `ApiKey`: hashed API key storage for future machine-to-machine integrations.
+- `MfaFactor` and `MfaChallenge`: MFA enrollment/challenge foundation for TOTP, WebAuthn and recovery-code flows.
+
+Do not enable API key or MFA endpoints until scopes, enrollment policy, recovery policy, lockout behavior and audit requirements are defined.
 
 ## CORS
 

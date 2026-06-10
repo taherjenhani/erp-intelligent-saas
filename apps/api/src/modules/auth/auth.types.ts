@@ -4,6 +4,7 @@ export type AuthContextInput = {
   ipAddress?: string | null;
   userAgent?: string | null;
   correlationId?: string | null;
+  idempotencyKey?: string | null;
 };
 
 export type PublicUserRecord = {

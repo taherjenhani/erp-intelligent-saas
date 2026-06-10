@@ -64,6 +64,15 @@ test("parseEnv requires separate password and token secrets", () => {
   );
 });
 
+test("parseEnv requires separate refresh idempotency secret", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      REFRESH_IDEMPOTENCY_SECRET: requiredEnv.TOKEN_HASH_SECRET,
+    })
+  );
+});
+
 test("parseEnv rejects local CORS origins in production", () => {
   assert.throws(() =>
     parseEnv({

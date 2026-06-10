@@ -16,7 +16,13 @@ export async function cleanupExpiredTokens() {
     Date.now() - LOGIN_LOCK_RETENTION_MS
   );
 
-  const [authTokens, refreshTokens, loginAttempts, loginLocks] =
+  const [
+    authTokens,
+    refreshTokens,
+    loginAttempts,
+    loginLocks,
+    refreshIdempotencyResponses,
+  ] =
     await prisma.$transaction([
       prisma.authToken.deleteMany({
         where: {
@@ -54,6 +60,19 @@ export async function cleanupExpiredTokens() {
           ],
         },
       }),
+      prisma.refreshRotation.updateMany({
+        where: {
+          idempotencyExpiresAt: {
+            lt: now,
+          },
+          responseRefreshToken: {
+            not: null,
+          },
+        },
+        data: {
+          responseRefreshToken: null,
+        },
+      }),
     ]);
 
   return {
@@ -61,6 +80,8 @@ export async function cleanupExpiredTokens() {
     refreshTokens: refreshTokens.count,
     loginAttempts: loginAttempts.count,
     loginLocks: loginLocks.count,
+    refreshIdempotencyResponses:
+      refreshIdempotencyResponses.count,
   };
 }
 

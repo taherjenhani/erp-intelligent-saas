@@ -10,9 +10,15 @@ import { prisma } from "../../lib/prisma";
 import { hashPassword } from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
 import { toPublicUser } from "./auth.mapper";
+import {
+  createRegisteredUser,
+  findActiveStoreForRegistration,
+  findUserByEmail,
+} from "./auth.repository";
 import { createAuthToken } from "./auth-token.service";
 import type { RegisterInput } from "./auth.schema";
 import type { AuthContextInput, PublicUserRecord } from "./auth.types";
+import { rememberPassword } from "./password-history.service";
 
 function isUniqueConstraintError(error: unknown) {
   return (
@@ -27,9 +33,7 @@ export async function registerUser(
 ) {
   const email = data.email.trim().toLowerCase();
 
-  const existingUser = await prisma.user.findUnique({
-    where: { email },
-  });
+  const existingUser = await findUserByEmail(email);
 
   if (existingUser) {
     throw new AuthError(
@@ -42,16 +46,7 @@ export async function registerUser(
   let storeOrganizationId: string | null = null;
 
   if (data.storeId) {
-    const store = await prisma.store.findFirst({
-      where: {
-        id: data.storeId,
-        isActive: true,
-        organization: {
-          isActive: true,
-        },
-      },
-      select: { id: true, organizationId: true },
-    });
+    const store = await findActiveStoreForRegistration(data.storeId);
 
     if (!store) {
       throw new AuthError(
@@ -74,39 +69,20 @@ export async function registerUser(
 
   try {
     result = await prisma.$transaction(async (tx) => {
-      const createdUser = await tx.user.create({
-        data: {
-          firstName: data.firstName.trim(),
-          lastName: data.lastName.trim(),
-          email,
-          password: hashedPassword,
-          role: "EMPLOYEE",
-          storeAccesses: data.storeId
-            ? {
-                create: {
-                  storeId: data.storeId,
-                  role: "EMPLOYEE",
-                },
-              }
-            : undefined,
-          memberships: storeOrganizationId
-            ? {
-                create: {
-                  organizationId: storeOrganizationId,
-                  role: "EMPLOYEE",
-                },
-              }
-            : undefined,
-        },
-        include: {
-          storeAccesses: {
-            select: { storeId: true, role: true },
-          },
-          memberships: {
-            select: { organizationId: true, role: true },
-          },
-        },
-      });
+      const createdUser = await createRegisteredUser({
+        firstName: data.firstName.trim(),
+        lastName: data.lastName.trim(),
+        email,
+        password: hashedPassword,
+        storeId: data.storeId,
+        organizationId: storeOrganizationId,
+      }, tx);
+
+      await rememberPassword(
+        createdUser.id,
+        hashedPassword,
+        tx
+      );
 
       const emailVerificationToken = await createAuthToken(
         createdUser.id,
