@@ -20,6 +20,12 @@ npm run tenant:preflight
 
 Do not run `npx prisma migrate deploy` on production until preflight passes.
 
+After backfill is done, run the bundled auth gate against the same target database:
+
+```powershell
+npm run predeploy:auth
+```
+
 ## 2. Apply Migrations
 
 For an empty database:
@@ -47,6 +53,8 @@ Install `apps/api/monitoring/prometheus-alerts.yml` in Prometheus or the platfor
 
 `SENT_UNKNOWN` means SMTP accepted the email but the API could not persist the final `SENT` state. Review the row manually before retrying, because SMTP `Message-ID` helps deduplication but is not a hard idempotency guarantee for every provider.
 
+For enterprise production, prefer a provider/API that supports a transport-level idempotency key. SMTP with a stable `Message-ID` is only a best-effort deduplication hint.
+
 ## 5. Run CI-Equivalent Validation
 
 Use a disposable PostgreSQL database and run:
@@ -68,6 +76,7 @@ Set `RUN_DB_TESTS=true` and never point integration tests at production data.
 ## 6. Check Remaining Known Risks
 
 - Metrics are in-memory per process. Scrape every instance or export through OpenTelemetry/Prometheus infrastructure.
+- Set a stable `METRICS_INSTANCE_ID` for each instance so dashboards and alerts can identify which process emitted a sample.
 - Email outbox encryption keys are env-managed. Move to KMS/Vault before enterprise production with strict key custody requirements.
 - API key and MFA tables are schema foundations only. Do not expose endpoints until rotation, recovery, lockout, audit, rate-limit and UX policies are defined.
 - `npm audit --audit-level=moderate` currently reports Prisma/Hono advisories without a fix. Keep Dependabot enabled and upgrade as soon as patched versions are available.

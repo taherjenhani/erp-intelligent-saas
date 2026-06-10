@@ -1,9 +1,10 @@
 import type { FastifyPluginAsync } from "fastify";
 import fp from "fastify-plugin";
 import crypto from "crypto";
+import os from "os";
 
 import { env } from "../config/env";
-import { renderMetrics } from "../lib/metrics";
+import { renderMetrics, setGauge } from "../lib/metrics";
 
 function hasValidMetricsToken(authorization: string | undefined) {
   const expected = `Bearer ${env.METRICS_TOKEN}`;
@@ -25,6 +26,19 @@ const metricsPlugin: FastifyPluginAsync = async (app) => {
   if (!env.METRICS_ENABLED) {
     return;
   }
+
+  setGauge(
+    "erp_api_instance_info",
+    "API instance identity for per-instance metric scraping.",
+    {
+      instance:
+        env.METRICS_INSTANCE_ID ??
+        process.env.HOSTNAME ??
+        os.hostname(),
+      node_env: env.NODE_ENV,
+    },
+    1
+  );
 
   app.get("/metrics", async (request, reply) => {
     if (!env.METRICS_TOKEN) {

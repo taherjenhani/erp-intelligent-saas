@@ -180,6 +180,7 @@ const envSchema = z
       .default(60 * 1000),
     METRICS_ENABLED: booleanFromEnv.default(false),
     METRICS_TOKEN: z.string().min(16).optional(),
+    METRICS_INSTANCE_ID: z.string().min(1).optional(),
 
     JWT_ACCESS_SECRET: z
       .string()

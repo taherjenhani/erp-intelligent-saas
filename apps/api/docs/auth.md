@@ -165,6 +165,7 @@ Metrics are disabled by default. Enable them only for internal scraping. `METRIC
 ```env
 METRICS_ENABLED=true
 METRICS_TOKEN=replace-with-at-least-16-characters
+METRICS_INSTANCE_ID=api-prod-1
 ```
 
 Then scrape:
@@ -176,6 +177,7 @@ Authorization: Bearer <METRICS_TOKEN>
 
 Current metrics include:
 
+- `erp_api_instance_info`
 - `erp_audit_log_write_total`
 - `erp_email_outbox_claim_total`
 - `erp_email_outbox_delivery_total`
@@ -188,7 +190,7 @@ Current metrics include:
 Alert on `erp_email_outbox_delivery_total{status="sent_unknown"}`. It means SMTP reported success but the API could not persist the final `SENT` state; retrying those rows manually can send duplicates.
 The Prometheus rule is provided in `apps/api/monitoring/prometheus-alerts.yml`.
 
-In multi-instance deployments these metrics are process-local. Scrape every API instance or export them to Prometheus/OpenTelemetry through the platform collector. Do not use one instance's `/metrics` endpoint as a global source of truth.
+In multi-instance deployments these metrics are process-local. Set a stable `METRICS_INSTANCE_ID` per instance, scrape every API instance, or export them to Prometheus/OpenTelemetry through the platform collector. Do not use one instance's `/metrics` endpoint as a global source of truth.
 
 ## Tests
 
@@ -205,6 +207,14 @@ npm run audit:ci
 ```
 
 `audit:ci` currently blocks high and critical vulnerabilities. `npm audit --audit-level=moderate` still reports Prisma/Hono advisories without an upstream fix; track them through Dependabot and upgrade Prisma/Hono when patched versions are available.
+
+Pre-deploy auth gate for a target database after any required tenant backfill:
+
+```powershell
+npm run predeploy:auth
+```
+
+If `tenant:preflight` fails, configure `STORE_ORGANIZATION_BACKFILL_MAP`, run `npm run tenant:backfill-stores`, then rerun `npm run predeploy:auth`.
 
 Integration test with PostgreSQL:
 

@@ -20,6 +20,15 @@ test("metrics render counters and gauges in prometheus text format", () => {
     }
   );
   setGauge(
+    "erp_api_instance_info",
+    "API instance identity for per-instance metric scraping.",
+    {
+      instance: "api-1",
+      node_env: "test",
+    },
+    1
+  );
+  setGauge(
     "erp_email_outbox_batch_processed",
     "Last email outbox batch processed count.",
     {},
@@ -35,4 +44,8 @@ test("metrics render counters and gauges in prometheus text format", () => {
   );
   assert.match(output, /# TYPE erp_email_outbox_batch_processed gauge/);
   assert.match(output, /erp_email_outbox_batch_processed 2/);
+  assert.match(
+    output,
+    /erp_api_instance_info\{instance="api-1",node_env="test"\} 1/
+  );
 });
