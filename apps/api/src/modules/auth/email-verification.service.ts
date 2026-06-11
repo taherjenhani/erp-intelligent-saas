@@ -3,6 +3,7 @@ import {
   enqueueEmail,
   processQueuedEmail,
 } from "../../lib/email";
+import { reportOperationalError } from "../../lib/operationalErrors";
 import { prisma } from "../../lib/prisma";
 import { writeAuthAudit } from "./auth-audit.service";
 import { consumeAuthToken, createAuthToken } from "./auth-token.service";
@@ -94,7 +95,11 @@ export async function resendEmailVerification(
     });
 
   void processQueuedEmail(emailVerificationOutboxId).catch((error) => {
-    console.error("Inline email processing failed", error);
+    reportOperationalError("inline_email_processing_failed", error, {
+      outboxId: emailVerificationOutboxId,
+      userId: user.id,
+      purpose: "email_verification_resend",
+    });
   });
 
   await writeAuthAudit(

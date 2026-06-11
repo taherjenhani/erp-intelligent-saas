@@ -4,6 +4,7 @@ import {
   processQueuedEmail,
 } from "../../lib/email";
 import { AuthError } from "../../lib/errors";
+import { reportOperationalError } from "../../lib/operationalErrors";
 import { prisma } from "../../lib/prisma";
 import {
   activePasswordPepperKeyId,
@@ -75,7 +76,10 @@ export async function requestPasswordReset(
     });
 
   void processQueuedEmail(passwordResetOutboxId).catch((error) => {
-    console.error("Inline email processing failed", error);
+    reportOperationalError("inline_email_processing_failed", error, {
+      outboxId: passwordResetOutboxId,
+      purpose: "password_reset",
+    });
   });
 
   await writeAuthAudit(

@@ -4,6 +4,7 @@ import nodemailer from "nodemailer";
 
 import { env } from "../config/env";
 import { incrementCounter, setGauge } from "./metrics";
+import { reportOperationalError } from "./operationalErrors";
 import { prisma } from "./prisma";
 
 type PrismaClientLike = Prisma.TransactionClient | typeof prisma;
@@ -348,6 +349,10 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unknown error";
 }
 
+function deliveryErrorSource() {
+  return env.EMAIL_PROVIDER === "http" ? "HTTP_PROVIDER" : "SMTP";
+}
+
 export async function recoverStaleOutboxLocks() {
   const cutoff = new Date(
     Date.now() - env.EMAIL_OUTBOX_LOCK_TIMEOUT_MS
@@ -435,7 +440,7 @@ async function markDeliveryFailed(
       status: attempts >= 5 ? "FAILED" : "PENDING",
       attempts,
       lastError: errorMessage(error),
-      lastErrorSource: "SMTP",
+      lastErrorSource: deliveryErrorSource(),
       nextAttemptAt: retryDelay(attempts),
       lockedAt: null,
       lockedBy: null,
@@ -447,7 +452,12 @@ async function markDeliveryFailed(
     "Total email outbox delivery attempts by status.",
     { status: attempts >= 5 ? "failed_terminal" : "failed_retryable" }
   );
-  console.error("Email delivery failed", error);
+  reportOperationalError("email_delivery_failed", error, {
+    emailId: email.id,
+    messageId: email.messageId,
+    provider: env.EMAIL_PROVIDER,
+    attempts,
+  });
 }
 
 async function markDeliveryPersistenceUnknown(
@@ -474,9 +484,14 @@ async function markDeliveryPersistenceUnknown(
       },
     });
   } catch (persistenceError) {
-    console.error(
-      "Email delivery succeeded but SENT_UNKNOWN persistence failed",
-      persistenceError
+    reportOperationalError(
+      "email_sent_unknown_persistence_failed",
+      persistenceError,
+      {
+        emailId: email.id,
+        messageId: email.messageId,
+        providerMessageId,
+      }
     );
   }
 
@@ -485,7 +500,11 @@ async function markDeliveryPersistenceUnknown(
     "Total email outbox delivery attempts by status.",
     { status: "sent_unknown" }
   );
-  console.error("Email delivery state persistence failed", error);
+  reportOperationalError("email_delivery_state_persistence_failed", error, {
+    emailId: email.id,
+    messageId: email.messageId,
+    providerMessageId,
+  });
 }
 
 async function deliverOutboxEmail(email: EmailOutbox) {
@@ -509,7 +528,11 @@ async function deliverOutboxEmail(email: EmailOutbox) {
         },
       })
       .catch((error) => {
-        console.error("Email outbox heartbeat failed", error);
+        reportOperationalError("email_outbox_heartbeat_failed", error, {
+          emailId: email.id,
+          messageId: email.messageId,
+          lockOwner,
+        });
       });
   }, env.EMAIL_OUTBOX_LOCK_HEARTBEAT_MS);
   heartbeat.unref?.();

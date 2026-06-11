@@ -6,6 +6,7 @@ import {
   processQueuedEmail,
 } from "../../lib/email";
 import { AuthError } from "../../lib/errors";
+import { reportOperationalError } from "../../lib/operationalErrors";
 import { prisma } from "../../lib/prisma";
 import {
   activePasswordPepperKeyId,
@@ -126,7 +127,11 @@ export async function registerUser(
   } = result;
 
   void processQueuedEmail(emailVerificationOutboxId).catch((error) => {
-    console.error("Inline email processing failed", error);
+    reportOperationalError("inline_email_processing_failed", error, {
+      outboxId: emailVerificationOutboxId,
+      userId: user.id,
+      purpose: "email_verification",
+    });
   });
 
   await writeAuthAudit("REGISTER", context, user.id);
