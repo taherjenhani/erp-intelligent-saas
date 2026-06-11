@@ -97,17 +97,21 @@ export async function registerController(
     data,
     getRequestContext(request)
   );
+  const canExposeDebugRegistrationData =
+    env.EXPOSE_AUTH_TOKENS &&
+    result.created &&
+    result.user &&
+    result.emailVerificationToken;
 
-  return reply.status(201).send({
+  return reply.status(202).send({
     success: true,
-    message: "User created successfully",
-    data: {
-      user: result.user,
-      emailVerificationToken:
-        env.EXPOSE_AUTH_TOKENS
-          ? result.emailVerificationToken
-          : undefined,
-    },
+    message: "Registration request accepted",
+    data: canExposeDebugRegistrationData
+      ? {
+          user: result.user,
+          emailVerificationToken: result.emailVerificationToken,
+        }
+      : undefined,
   });
 }
 

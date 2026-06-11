@@ -11,6 +11,7 @@ test("email outbox encrypts sensitive body fields at rest", () => {
   const token = "a".repeat(128);
   const message = {
     messageId: "<test-message@example.com>",
+    idempotencyKey: "test-idempotency-key",
     to: "user@example.com",
     subject: "Reset your password",
     text: `Reset token: ${token}`,

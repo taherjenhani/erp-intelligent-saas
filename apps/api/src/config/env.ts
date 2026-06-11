@@ -15,6 +15,7 @@ const DEVELOPMENT_PASSWORD_PEPPER_KEY_ID = "local-dev";
 const LEGACY_SECRET_FALLBACK_DEADLINE =
   "2026-09-30T00:00:00.000Z";
 const KEY_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
+const HTTP_HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,64}$/;
 
 const booleanFromEnv = z.preprocess((value) => {
   if (typeof value !== "string") {
@@ -178,6 +179,22 @@ const envSchema = z
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
     SMTP_FROM: z.string().email().default("noreply@example.com"),
+    EMAIL_PROVIDER: z.enum(["smtp", "http"]).default("smtp"),
+    EMAIL_ALLOW_SMTP_BEST_EFFORT: booleanFromEnv.default(false),
+    EMAIL_HTTP_API_URL: z.string().url().optional(),
+    EMAIL_HTTP_API_KEY: z.string().min(16).optional(),
+    EMAIL_HTTP_IDEMPOTENCY_HEADER: z
+      .string()
+      .regex(
+        HTTP_HEADER_NAME_PATTERN,
+        "EMAIL_HTTP_IDEMPOTENCY_HEADER is invalid"
+      )
+      .default("Idempotency-Key"),
+    EMAIL_PROVIDER_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30 * 1000),
     EMAIL_OUTBOX_BATCH_SIZE: z.coerce.number().default(20),
     EMAIL_OUTBOX_LOCK_TIMEOUT_MS: z.coerce
       .number()
@@ -210,6 +227,7 @@ const envSchema = z
     METRICS_TOKEN: z.string().min(16).optional(),
     METRICS_INSTANCE_ID: z.string().min(1).optional(),
     TOKEN_CLEANUP_WORKER_ENABLED: booleanFromEnv.default(false),
+    TOKEN_CLEANUP_EXTERNAL_SCHEDULED: booleanFromEnv.default(false),
     TOKEN_CLEANUP_WORKER_INTERVAL_MS: z.coerce
       .number()
       .int()
@@ -343,6 +361,45 @@ const envSchema = z
       });
     }
 
+    if (
+      env.EMAIL_PROVIDER_TIMEOUT_MS >=
+      env.EMAIL_OUTBOX_LOCK_TIMEOUT_MS
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EMAIL_PROVIDER_TIMEOUT_MS"],
+        message:
+          "EMAIL_PROVIDER_TIMEOUT_MS must be lower than EMAIL_OUTBOX_LOCK_TIMEOUT_MS",
+      });
+    }
+
+    if (env.REFRESH_IDEMPOTENCY_TTL_MS > 5 * 60 * 1000) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["REFRESH_IDEMPOTENCY_TTL_MS"],
+        message:
+          "REFRESH_IDEMPOTENCY_TTL_MS must stay at or below 300000ms",
+      });
+    }
+
+    if (env.EMAIL_PROVIDER === "http") {
+      if (!env.EMAIL_HTTP_API_URL) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["EMAIL_HTTP_API_URL"],
+          message: "EMAIL_HTTP_API_URL is required when EMAIL_PROVIDER=http",
+        });
+      }
+
+      if (!env.EMAIL_HTTP_API_KEY) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["EMAIL_HTTP_API_KEY"],
+          message: "EMAIL_HTTP_API_KEY is required when EMAIL_PROVIDER=http",
+        });
+      }
+    }
+
     const emailKeyring = parseEmailOutboxKeyring(
       env.EMAIL_OUTBOX_ENCRYPTION_KEYS
     );
@@ -456,11 +513,35 @@ const envSchema = z
       });
     }
 
-    if (!env.SMTP_HOST) {
+    if (env.EMAIL_PROVIDER === "smtp" && !env.SMTP_HOST) {
       ctx.addIssue({
         code: "custom",
         path: ["SMTP_HOST"],
-        message: "SMTP_HOST is required in production",
+        message: "SMTP_HOST is required in production when EMAIL_PROVIDER=smtp",
+      });
+    }
+
+    if (
+      env.EMAIL_PROVIDER === "smtp" &&
+      !env.EMAIL_ALLOW_SMTP_BEST_EFFORT
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EMAIL_ALLOW_SMTP_BEST_EFFORT"],
+        message:
+          "SMTP only provides best-effort idempotency. Use EMAIL_PROVIDER=http or set EMAIL_ALLOW_SMTP_BEST_EFFORT=true explicitly.",
+      });
+    }
+
+    if (
+      !env.TOKEN_CLEANUP_WORKER_ENABLED &&
+      !env.TOKEN_CLEANUP_EXTERNAL_SCHEDULED
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["TOKEN_CLEANUP_WORKER_ENABLED"],
+        message:
+          "Production must enable TOKEN_CLEANUP_WORKER_ENABLED or set TOKEN_CLEANUP_EXTERNAL_SCHEDULED=true for an external cleanup schedule",
       });
     }
 

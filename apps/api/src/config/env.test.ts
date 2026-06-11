@@ -152,3 +152,95 @@ test("parseEnv requires outbox heartbeat lower than lock timeout", () => {
     })
   );
 });
+
+test("parseEnv requires email provider timeout lower than outbox lock timeout", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      EMAIL_OUTBOX_LOCK_TIMEOUT_MS: "60000",
+      EMAIL_PROVIDER_TIMEOUT_MS: "60000",
+    })
+  );
+});
+
+test("parseEnv accepts HTTP email provider with idempotency key support", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    EMAIL_PROVIDER: "http",
+    EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
+    EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",
+    EMAIL_HTTP_IDEMPOTENCY_HEADER: "Idempotency-Key",
+  });
+
+  assert.equal(parsed.EMAIL_PROVIDER, "http");
+  assert.equal(parsed.EMAIL_HTTP_IDEMPOTENCY_HEADER, "Idempotency-Key");
+});
+
+test("parseEnv limits refresh idempotency replay TTL", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      REFRESH_IDEMPOTENCY_TTL_MS: String(10 * 60 * 1000),
+    })
+  );
+});
+
+test("parseEnv requires explicit SMTP best-effort opt-in in production", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      NODE_ENV: "production",
+      APP_URL: "https://app.example.com",
+      CORS_ORIGIN: "https://app.example.com",
+      SMTP_HOST: "smtp.example.com",
+      RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+      EMAIL_OUTBOX_ENCRYPTION_KEY:
+        "production_email_outbox_encryption_key_minimum_32_chars",
+      CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
+      TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
+    })
+  );
+});
+
+test("parseEnv allows production HTTP email provider without SMTP best-effort", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    NODE_ENV: "production",
+    APP_URL: "https://app.example.com",
+    CORS_ORIGIN: "https://app.example.com",
+    EMAIL_PROVIDER: "http",
+    EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
+    EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",
+    RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+    EMAIL_OUTBOX_ENCRYPTION_KEY:
+      "production_email_outbox_encryption_key_minimum_32_chars",
+    CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
+    TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
+    REFRESH_IDEMPOTENCY_SECRET:
+      "production_refresh_idempotency_secret_minimum_32_chars",
+    TOKEN_CLEANUP_EXTERNAL_SCHEDULED: "true",
+  });
+
+  assert.equal(parsed.EMAIL_PROVIDER, "http");
+});
+
+test("parseEnv requires production token cleanup schedule", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      NODE_ENV: "production",
+      APP_URL: "https://app.example.com",
+      CORS_ORIGIN: "https://app.example.com",
+      EMAIL_PROVIDER: "http",
+      EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
+      EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",
+      RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+      EMAIL_OUTBOX_ENCRYPTION_KEY:
+        "production_email_outbox_encryption_key_minimum_32_chars",
+      CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
+      TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
+      REFRESH_IDEMPOTENCY_SECRET:
+        "production_refresh_idempotency_secret_minimum_32_chars",
+    })
+  );
+});

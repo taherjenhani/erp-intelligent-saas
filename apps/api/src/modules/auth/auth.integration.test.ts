@@ -71,7 +71,7 @@ test("auth routes register, verify, login and return /me", async (t) => {
       },
     });
 
-    assert.equal(registerResponse.statusCode, 201);
+    assert.equal(registerResponse.statusCode, 202);
 
     const verificationToken =
       registerResponse.json().data.emailVerificationToken;
@@ -183,7 +183,7 @@ test("password reset token cannot be reused", async (t) => {
       },
     });
 
-    assert.equal(registerResponse.statusCode, 201);
+    assert.equal(registerResponse.statusCode, 202);
 
     const verificationToken =
       registerResponse.json().data.emailVerificationToken;
@@ -345,7 +345,7 @@ test("concurrent refresh requests are idempotent", async (t) => {
       },
     });
 
-    assert.equal(registerResponse.statusCode, 201);
+    assert.equal(registerResponse.statusCode, 202);
 
     const verificationToken =
       registerResponse.json().data.emailVerificationToken;

@@ -36,16 +36,6 @@ export async function registerUser(
 ) {
   const email = data.email.trim().toLowerCase();
 
-  const existingUser = await findUserByEmail(email);
-
-  if (existingUser) {
-    throw new AuthError(
-      "AUTH_EMAIL_ALREADY_EXISTS",
-      "Email already exists",
-      409
-    );
-  }
-
   let storeOrganizationId: string | null = null;
 
   if (data.storeId) {
@@ -62,7 +52,17 @@ export async function registerUser(
     storeOrganizationId = store.organizationId;
   }
 
-  const hashedPassword = await hashPassword(data.password);
+  const hashedPasswordPromise = hashPassword(data.password);
+  const existingUser = await findUserByEmail(email);
+  const hashedPassword = await hashedPasswordPromise;
+
+  if (existingUser) {
+    return {
+      user: null,
+      emailVerificationToken: null,
+      created: false,
+    };
+  }
 
   let result: {
     user: PublicUserRecord;
@@ -109,11 +109,11 @@ export async function registerUser(
     });
   } catch (error) {
     if (isUniqueConstraintError(error)) {
-      throw new AuthError(
-        "AUTH_EMAIL_ALREADY_EXISTS",
-        "Email already exists",
-        409
-      );
+      return {
+        user: null,
+        emailVerificationToken: null,
+        created: false,
+      };
     }
 
     throw error;
@@ -134,5 +134,6 @@ export async function registerUser(
   return {
     user: toPublicUser(user),
     emailVerificationToken,
+    created: true,
   };
 }

@@ -2,10 +2,11 @@
 
 ## Production Checklist
 
-- Configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `EMAIL_OUTBOX_ENCRYPTION_KEY`, `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, `CSRF_SECRET`, `APP_URL`, `CORS_ORIGIN`, `RATE_LIMIT_REDIS_URL`, `METRICS_TOKEN` when metrics are enabled, and SMTP variables.
+- Configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `EMAIL_OUTBOX_ENCRYPTION_KEY`, `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, `CSRF_SECRET`, `APP_URL`, `CORS_ORIGIN`, `RATE_LIMIT_REDIS_URL`, `METRICS_TOKEN` when metrics are enabled, and email provider variables.
 - Keep `PASSWORD_PEPPER` and `TOKEN_HASH_SECRET` different. Password hashes and opaque token hashes must not share the same secret.
 - Keep `REFRESH_IDEMPOTENCY_SECRET` different from password/token secrets. It encrypts short-lived refresh replay responses.
-- Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `SMTP_HOST` is missing, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
+- Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, SMTP best-effort mode is not explicitly allowed, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
+- Production also requires token cleanup to be scheduled through `TOKEN_CLEANUP_WORKER_ENABLED=true` or `TOKEN_CLEANUP_EXTERNAL_SCHEDULED=true`.
 - Run Prisma migrations before starting the API.
 - Before applying `20260610120000_auth_production_hardening`, make sure `20260604103000_auth_multitenant_outbox_hardening` has added nullable `Store.organizationId`, backfill every existing store with `npm run tenant:backfill-stores`, then verify with `npm run tenant:preflight`.
 - Use HTTPS in production so refresh and CSRF cookies are sent with `secure: true`.
@@ -71,21 +72,22 @@ npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamode
 
 ## Email Delivery
 
-Email verification and password reset use an `EmailOutbox` table and SMTP through `nodemailer`. Auth flows enqueue email and do not depend on SMTP being available synchronously.
+Email verification and password reset use an `EmailOutbox` table and a configured email provider. Auth flows enqueue email and do not depend on the provider being available synchronously.
 Register, resend verification, and forgot-password create the auth token and outbox row in the same Prisma transaction. If the outbox insert fails, the business operation rolls back instead of leaving a user without a deliverable email.
 Outbox workers claim messages atomically with `PROCESSING`, `lockedAt`, and `lockedBy` before delivery to avoid duplicate sends when multiple workers run. Stale locks are recovered after `EMAIL_OUTBOX_LOCK_TIMEOUT_MS`.
-While SMTP delivery is running, the worker refreshes `lockedAt` every `EMAIL_OUTBOX_LOCK_HEARTBEAT_MS` so a slow provider call is not recovered as stale by another worker.
+While provider delivery is running, the worker refreshes `lockedAt` every `EMAIL_OUTBOX_LOCK_HEARTBEAT_MS` so a slow provider call is not recovered as stale by another worker. `EMAIL_PROVIDER_TIMEOUT_MS` must stay below `EMAIL_OUTBOX_LOCK_TIMEOUT_MS`.
 Email `text` and `html` bodies are encrypted at rest with the active `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, then scrubbed after successful delivery. New encrypted values use the `enc:v1:<keyId>:<payload>` prefix. Existing legacy `enc:v1:<payload>` rows can be migrated with the maintenance job below.
-Every queued email stores a stable `messageId` and `idempotencyKey`. SMTP delivery uses `messageId` as the `Message-ID` header; this helps downstream providers deduplicate where supported. If a future provider supports a first-class idempotency key, pass `EmailOutbox.idempotencyKey` to that provider API. If SMTP succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
+Every queued email stores a stable `messageId` and `idempotencyKey`. `EMAIL_PROVIDER=http` sends `EmailOutbox.idempotencyKey` as the configured idempotency header to a provider API. SMTP delivery only uses `messageId` as the `Message-ID` header, which is best-effort deduplication; production requires `EMAIL_ALLOW_SMTP_BEST_EFFORT=true` if SMTP is intentionally used. If provider delivery succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
 
 Required production variables:
 
 ```env
 APP_URL=https://your-frontend.example.com
-SMTP_HOST=smtp.example.com
-SMTP_PORT=587
-SMTP_USER=your-user
-SMTP_PASS=your-password
+EMAIL_PROVIDER=http
+EMAIL_HTTP_API_URL=https://email-provider.example.com/send
+EMAIL_HTTP_API_KEY=provider-api-key
+EMAIL_HTTP_IDEMPOTENCY_HEADER=Idempotency-Key
+EMAIL_PROVIDER_TIMEOUT_MS=30000
 SMTP_FROM=noreply@example.com
 EMAIL_OUTBOX_BATCH_SIZE=20
 EMAIL_OUTBOX_LOCK_TIMEOUT_MS=600000
@@ -97,7 +99,19 @@ EMAIL_OUTBOX_WORKER_ENABLED=true
 EMAIL_OUTBOX_WORKER_INTERVAL_MS=60000
 ```
 
-In development, if `SMTP_HOST` is missing, emails are not sent and the message is logged to the console.
+SMTP remains available for simple deployments:
+
+```env
+EMAIL_PROVIDER=smtp
+EMAIL_ALLOW_SMTP_BEST_EFFORT=true
+SMTP_HOST=smtp.example.com
+SMTP_PORT=587
+SMTP_USER=your-user
+SMTP_PASS=your-password
+SMTP_FROM=noreply@example.com
+```
+
+In development, if `EMAIL_PROVIDER=smtp` and `SMTP_HOST` is missing, emails are not sent and the message is logged to the console.
 `EXPOSE_AUTH_TOKENS=true` is accepted only in `NODE_ENV=test`, or in `NODE_ENV=development` when `APP_URL` and every `CORS_ORIGIN` entry point to localhost.
 
 Users can request a new verification link with:
@@ -261,8 +275,11 @@ For simple deployments, the API can run this cleanup periodically:
 
 ```env
 TOKEN_CLEANUP_WORKER_ENABLED=true
+TOKEN_CLEANUP_EXTERNAL_SCHEDULED=false
 TOKEN_CLEANUP_WORKER_INTERVAL_MS=3600000
 ```
+
+Refresh idempotency replay payloads are encrypted and short-lived. Keep `REFRESH_IDEMPOTENCY_TTL_MS` at or below `300000`; the default is `60000`.
 
 Before applying the tenant hardening migration on an existing database:
 

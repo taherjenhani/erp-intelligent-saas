@@ -19,6 +19,7 @@ type EmailMessage = {
 
 type StoredEmailMessage = EmailMessage & {
   messageId: string;
+  idempotencyKey: string;
 };
 
 const ENCRYPTED_VALUE_PREFIX = "enc:v1:";
@@ -194,11 +195,17 @@ export function encryptEmailMessageForStorage(message: EmailMessage) {
 export function decryptEmailMessageFromStorage(
   email: Pick<
     EmailOutbox,
-    "messageId" | "to" | "subject" | "text" | "html"
+    | "messageId"
+    | "idempotencyKey"
+    | "to"
+    | "subject"
+    | "text"
+    | "html"
   >
 ): StoredEmailMessage {
   return {
     messageId: email.messageId,
+    idempotencyKey: email.idempotencyKey,
     to: email.to,
     subject: email.subject,
     text: decryptOutboxValue(email.text),
@@ -219,6 +226,9 @@ function buildTransport() {
     host: env.SMTP_HOST,
     port: env.SMTP_PORT,
     secure: env.SMTP_PORT === 465,
+    connectionTimeout: env.EMAIL_PROVIDER_TIMEOUT_MS,
+    greetingTimeout: env.EMAIL_PROVIDER_TIMEOUT_MS,
+    socketTimeout: env.EMAIL_PROVIDER_TIMEOUT_MS,
     auth:
       env.SMTP_USER && env.SMTP_PASS
         ? {
@@ -229,7 +239,7 @@ function buildTransport() {
   });
 }
 
-async function deliverEmail(message: StoredEmailMessage) {
+async function deliverEmailViaSmtp(message: StoredEmailMessage) {
   const transport = buildTransport();
 
   if (!transport) {
@@ -258,6 +268,75 @@ async function deliverEmail(message: StoredEmailMessage) {
         ? info.messageId
         : message.messageId,
   };
+}
+
+async function deliverEmailViaHttpProvider(message: StoredEmailMessage) {
+  if (!env.EMAIL_HTTP_API_URL || !env.EMAIL_HTTP_API_KEY) {
+    throw new Error(
+      "EMAIL_HTTP_API_URL and EMAIL_HTTP_API_KEY are required for HTTP email delivery"
+    );
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, env.EMAIL_PROVIDER_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(env.EMAIL_HTTP_API_URL, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.EMAIL_HTTP_API_KEY}`,
+        [env.EMAIL_HTTP_IDEMPOTENCY_HEADER]: message.idempotencyKey,
+      },
+      body: JSON.stringify({
+        idempotencyKey: message.idempotencyKey,
+        messageId: message.messageId,
+        from: env.SMTP_FROM,
+        to: message.to,
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(
+        `Email provider API failed with HTTP ${response.status}`
+      );
+    }
+
+    const body = (await response.json().catch(() => null)) as
+      | {
+          id?: unknown;
+          messageId?: unknown;
+          providerMessageId?: unknown;
+        }
+      | null;
+
+    return {
+      providerMessageId:
+        typeof body?.providerMessageId === "string"
+          ? body.providerMessageId
+          : typeof body?.messageId === "string"
+            ? body.messageId
+            : typeof body?.id === "string"
+              ? body.id
+              : message.messageId,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function deliverEmail(message: StoredEmailMessage) {
+  if (env.EMAIL_PROVIDER === "http") {
+    return deliverEmailViaHttpProvider(message);
+  }
+
+  return deliverEmailViaSmtp(message);
 }
 
 function retryDelay(attempts: number) {
@@ -433,6 +512,7 @@ async function deliverOutboxEmail(email: EmailOutbox) {
         console.error("Email outbox heartbeat failed", error);
       });
   }, env.EMAIL_OUTBOX_LOCK_HEARTBEAT_MS);
+  heartbeat.unref?.();
 
   try {
     deliveryResult = await deliverEmail(
