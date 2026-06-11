@@ -10,3 +10,21 @@ groups:
         annotations:
           summary: "Email outbox has messages in SENT_UNKNOWN"
           description: "SMTP accepted an email but the API could not persist the final SENT state. Review EmailOutbox rows with status=SENT_UNKNOWN before retrying to avoid duplicate email delivery."
+      - alert: AuthAuditLogWriteFailure
+        expr: increase(erp_audit_log_write_total{status="failure"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: erp-api
+        annotations:
+          summary: "Auth audit log write failed"
+          description: "The API failed to persist at least one audit log event. Investigate database availability and audit pipeline health."
+      - alert: AuthSecurityEventWriteFailure
+        expr: increase(erp_security_event_total{status="failure"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          service: erp-api
+        annotations:
+          summary: "Security event write failed"
+          description: "The API failed to persist at least one normalized security event. Investigate database availability and SIEM pipeline health."

@@ -5,14 +5,22 @@ import {
 } from "../../lib/email";
 import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
-import { hashPassword, verifyPassword } from "../../utils/hash";
+import {
+  activePasswordPepperKeyId,
+  hashPassword,
+  verifyPassword,
+} from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
 import {
   findPasswordResetUser,
   findUserPasswordById,
   updatePasswordAndRevokeOtherSessions,
 } from "./auth.repository";
-import { consumeAuthToken, createAuthToken } from "./auth-token.service";
+import {
+  createAuthToken,
+  findValidAuthToken,
+  markAuthTokenUsed,
+} from "./auth-token.service";
 import type {
   ChangePasswordInput,
   RequestPasswordResetInput,
@@ -88,14 +96,14 @@ export async function resetPassword(
   const password = await hashPassword(data.password);
 
   const authToken = await prisma.$transaction(async (tx) => {
-    const consumedToken = await consumeAuthToken(
+    const validToken = await findValidAuthToken(
       data.token,
       "PASSWORD_RESET",
       "AUTH_INVALID_RESET_TOKEN",
       tx
     );
     const user = await findUserPasswordById(
-      consumedToken.userId,
+      validToken.userId,
       tx
     );
 
@@ -107,22 +115,30 @@ export async function resetPassword(
     }
 
     await assertPasswordNotRecentlyUsed(
-      consumedToken.userId,
+      validToken.userId,
       data.password,
       user.password,
+      user.passwordPepperKeyId,
+      tx
+    );
+
+    await markAuthTokenUsed(
+      validToken.id,
+      "AUTH_INVALID_RESET_TOKEN",
       tx
     );
 
     await updatePasswordAndRevokeOtherSessions(
       {
-        userId: consumedToken.userId,
+        userId: validToken.userId,
         password,
+        passwordPepperKeyId: activePasswordPepperKeyId(),
       },
       tx
     );
-    await rememberPassword(consumedToken.userId, password, tx);
+    await rememberPassword(validToken.userId, password, tx);
 
-    return consumedToken;
+    return validToken;
   });
 
   await writeAuthAudit(
@@ -146,7 +162,8 @@ export async function changePassword(
 
   const isPasswordValid = await verifyPassword(
     data.currentPassword,
-    user.password
+    user.password,
+    user.passwordPepperKeyId
   );
 
   if (!isPasswordValid) {
@@ -159,7 +176,8 @@ export async function changePassword(
   await assertPasswordNotRecentlyUsed(
     user.id,
     data.newPassword,
-    user.password
+    user.password,
+    user.passwordPepperKeyId
   );
 
   const password = await hashPassword(data.newPassword);
@@ -168,6 +186,7 @@ export async function changePassword(
       {
         userId: user.id,
         password,
+        passwordPepperKeyId: activePasswordPepperKeyId(),
         keepSessionId: currentSessionId,
       },
       tx

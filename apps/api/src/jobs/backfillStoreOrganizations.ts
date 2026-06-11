@@ -2,6 +2,21 @@ import { prisma } from "../lib/prisma";
 
 type BackfillMap = Record<string, string>;
 
+type StoreMatch = {
+  id: string;
+  code: string;
+  name: string;
+  organizationId: string | null;
+};
+
+type OrganizationMatch = {
+  id: string;
+  code: string;
+  name: string;
+};
+
+const nullableTenantMigration = "20260604103000_auth_multitenant_outbox_hardening";
+
 function parseBackfillMap() {
   const raw = process.env.STORE_ORGANIZATION_BACKFILL_MAP;
 
@@ -21,7 +36,29 @@ function parseBackfillMap() {
     throw new Error("STORE_ORGANIZATION_BACKFILL_MAP must be a JSON object");
   }
 
-  return parsed as BackfillMap;
+  const backfillMap = parsed as BackfillMap;
+  const entries = Object.entries(backfillMap);
+
+  if (entries.length === 0) {
+    throw new Error(
+      "STORE_ORGANIZATION_BACKFILL_MAP must contain at least one store mapping"
+    );
+  }
+
+  for (const [storeIdOrCode, organizationIdOrCode] of entries) {
+    if (
+      typeof storeIdOrCode !== "string" ||
+      storeIdOrCode.trim().length === 0 ||
+      typeof organizationIdOrCode !== "string" ||
+      organizationIdOrCode.trim().length === 0
+    ) {
+      throw new Error(
+        "STORE_ORGANIZATION_BACKFILL_MAP entries must be non-empty strings"
+      );
+    }
+  }
+
+  return backfillMap;
 }
 
 async function hasStoreOrganizationColumn() {
@@ -40,23 +77,76 @@ async function hasStoreOrganizationColumn() {
 async function main() {
   if (!(await hasStoreOrganizationColumn())) {
     throw new Error(
-      "Store.organizationId does not exist yet. Apply the multitenant migration that adds the nullable column before running the backfill."
+      `Store.organizationId does not exist yet. Apply ${nullableTenantMigration} first because it adds the nullable tenant column required by this backfill.`
     );
   }
 
   const backfillMap = parseBackfillMap();
   let updated = 0;
 
-  for (const [storeIdOrCode, organizationId] of Object.entries(backfillMap)) {
-    const result = await prisma.$executeRaw`
-      UPDATE "Store"
-      SET "organizationId" = ${organizationId}
-      WHERE ("id" = ${storeIdOrCode} OR "code" = ${storeIdOrCode})
-        AND "organizationId" IS NULL
-    `;
+  await prisma.$transaction(async (tx) => {
+    for (const [storeIdOrCode, organizationIdOrCode] of Object.entries(
+      backfillMap
+    )) {
+      const stores = await tx.$queryRaw<StoreMatch[]>`
+        SELECT "id", "code", "name", "organizationId"
+        FROM "Store"
+        WHERE "id" = ${storeIdOrCode}
+          OR "code" = ${storeIdOrCode}
+      `;
 
-    updated += result;
-  }
+      if (stores.length === 0) {
+        throw new Error(`No Store matched backfill key "${storeIdOrCode}"`);
+      }
+
+      if (stores.length > 1) {
+        throw new Error(
+          `Backfill key "${storeIdOrCode}" matched multiple stores. Use unambiguous store ids.`
+        );
+      }
+
+      const organizations = await tx.$queryRaw<OrganizationMatch[]>`
+        SELECT "id", "code", "name"
+        FROM "Organization"
+        WHERE "id" = ${organizationIdOrCode}
+          OR "code" = ${organizationIdOrCode}
+      `;
+
+      if (organizations.length === 0) {
+        throw new Error(
+          `No Organization matched backfill value "${organizationIdOrCode}" for store "${storeIdOrCode}"`
+        );
+      }
+
+      if (organizations.length > 1) {
+        throw new Error(
+          `Backfill value "${organizationIdOrCode}" matched multiple organizations. Use unambiguous organization ids.`
+        );
+      }
+
+      const [store] = stores;
+      const [organization] = organizations;
+
+      if (store.organizationId && store.organizationId !== organization.id) {
+        throw new Error(
+          `Store "${store.code}" already belongs to organization "${store.organizationId}". Refusing to reassign it to "${organization.id}".`
+        );
+      }
+
+      if (store.organizationId === organization.id) {
+        continue;
+      }
+
+      const result = await tx.$executeRaw`
+        UPDATE "Store"
+        SET "organizationId" = ${organization.id}
+        WHERE "id" = ${store.id}
+          AND "organizationId" IS NULL
+      `;
+
+      updated += result;
+    }
+  });
 
   const remaining = await prisma.$queryRaw<Array<{ count: bigint }>>`
     SELECT COUNT(*)::bigint AS count

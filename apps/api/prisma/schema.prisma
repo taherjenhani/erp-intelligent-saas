@@ -110,14 +110,15 @@ enum MfaChallengeStatus {
 }
 
 model User {
-  id           String       @id @default(cuid())
-  firstName    String
-  lastName     String
-  email        String       @unique
-  password     String
-  role         Role         @default(EMPLOYEE)
-  platformRole PlatformRole @default(USER)
-  isActive     Boolean      @default(true)
+  id                  String       @id @default(cuid())
+  firstName           String
+  lastName            String
+  email               String       @unique
+  password            String
+  passwordPepperKeyId String?
+  role                Role         @default(EMPLOYEE)
+  platformRole        PlatformRole @default(USER)
+  isActive            Boolean      @default(true)
 
   sessions        Session[]
   storeAccesses   UserStoreAccess[]
@@ -347,8 +348,9 @@ model PasswordHistory {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  passwordHash String
-  createdAt    DateTime @default(now())
+  passwordHash        String
+  passwordPepperKeyId String?
+  createdAt           DateTime @default(now())
 
   @@index([userId, createdAt])
 }
@@ -436,6 +438,7 @@ model ApiKey {
   revokedAt  DateTime?
   createdAt  DateTime  @default(now())
   updatedAt  DateTime  @updatedAt
+  /// Database migration enforces exactly one owner: userId XOR organizationId.
 
   @@index([userId])
   @@index([organizationId])
@@ -453,8 +456,9 @@ model MfaFactor {
   status MfaFactorStatus @default(PENDING)
   label  String?
 
-  secretHash String?
-  publicKey  String?
+  encryptedSecret String?
+  encryptionKeyId String?
+  publicKey       String?
 
   lastUsedAt DateTime?
   disabledAt DateTime?
@@ -512,11 +516,12 @@ model LoginLock {
 model EmailOutbox {
   id String @id @default(cuid())
 
-  messageId String @unique
-  to        String
-  subject   String
-  text      String
-  html      String
+  messageId      String @unique
+  idempotencyKey String @unique
+  to             String
+  subject        String
+  text           String
+  html           String
 
   status            EmailStatus @default(PENDING)
   attempts          Int         @default(0)

@@ -11,6 +11,7 @@ const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY_ID = "local-dev";
 const DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET =
   "development-refresh-idempotency-secret-change-before-prod";
 const DEVELOPMENT_CORS_ORIGIN = "http://localhost:3000";
+const DEVELOPMENT_PASSWORD_PEPPER_KEY_ID = "local-dev";
 const LEGACY_SECRET_FALLBACK_DEADLINE =
   "2026-09-30T00:00:00.000Z";
 const KEY_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -70,6 +71,28 @@ function isValidDateTime(value: string) {
 }
 
 function parseEmailOutboxKeyring(value: string | undefined) {
+  if (!value) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseSecretKeyring(value: string | undefined) {
   if (!value) {
     return {};
   }
@@ -178,9 +201,21 @@ const envSchema = z
       .int()
       .positive()
       .default(60 * 1000),
+    EMAIL_OUTBOX_LOCK_HEARTBEAT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 1000),
     METRICS_ENABLED: booleanFromEnv.default(false),
     METRICS_TOKEN: z.string().min(16).optional(),
     METRICS_INSTANCE_ID: z.string().min(1).optional(),
+    TOKEN_CLEANUP_WORKER_ENABLED: booleanFromEnv.default(false),
+    TOKEN_CLEANUP_WORKER_INTERVAL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(60 * 60 * 1000),
+    HELMET_CSP_ENABLED: booleanFromEnv.default(false),
 
     JWT_ACCESS_SECRET: z
       .string()
@@ -191,6 +226,11 @@ const envSchema = z
     PASSWORD_PEPPER: z
       .string()
       .min(32, "PASSWORD_PEPPER must contain at least 32 characters"),
+    PASSWORD_PEPPER_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, "PASSWORD_PEPPER_KEY_ID is invalid")
+      .default(DEVELOPMENT_PASSWORD_PEPPER_KEY_ID),
+    PASSWORD_PEPPER_KEYS: z.string().optional(),
     TOKEN_HASH_SECRET: z
       .string()
       .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters")
@@ -244,6 +284,62 @@ const envSchema = z
         path: ["REFRESH_IDEMPOTENCY_SECRET"],
         message:
           "REFRESH_IDEMPOTENCY_SECRET must be different from PASSWORD_PEPPER and TOKEN_HASH_SECRET",
+      });
+    }
+
+    const passwordPepperKeyring = parseSecretKeyring(
+      env.PASSWORD_PEPPER_KEYS
+    );
+
+    if (passwordPepperKeyring === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["PASSWORD_PEPPER_KEYS"],
+        message:
+          "PASSWORD_PEPPER_KEYS must be a JSON object of key ids to secrets",
+      });
+    } else {
+      for (const [keyId, secret] of Object.entries(passwordPepperKeyring)) {
+        if (!KEY_ID_PATTERN.test(keyId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["PASSWORD_PEPPER_KEYS"],
+            message: `Invalid password pepper key id: ${keyId}`,
+          });
+        }
+
+        if (typeof secret !== "string" || secret.length < 32) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["PASSWORD_PEPPER_KEYS"],
+            message:
+              "Every PASSWORD_PEPPER_KEYS secret must contain at least 32 characters",
+          });
+        }
+      }
+
+      if (
+        env.PASSWORD_PEPPER_KEYS &&
+        !(env.PASSWORD_PEPPER_KEY_ID in passwordPepperKeyring)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["PASSWORD_PEPPER_KEY_ID"],
+          message:
+            "PASSWORD_PEPPER_KEY_ID must exist in PASSWORD_PEPPER_KEYS",
+        });
+      }
+    }
+
+    if (
+      env.EMAIL_OUTBOX_LOCK_HEARTBEAT_MS >=
+      env.EMAIL_OUTBOX_LOCK_TIMEOUT_MS
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["EMAIL_OUTBOX_LOCK_HEARTBEAT_MS"],
+        message:
+          "EMAIL_OUTBOX_LOCK_HEARTBEAT_MS must be lower than EMAIL_OUTBOX_LOCK_TIMEOUT_MS",
       });
     }
 

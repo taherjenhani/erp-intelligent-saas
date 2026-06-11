@@ -62,6 +62,7 @@ export function findUserPasswordById(
     select: {
       id: true,
       password: true,
+      passwordPepperKeyId: true,
     },
   });
 }
@@ -72,6 +73,7 @@ export function createRegisteredUser(
     lastName: string;
     email: string;
     password: string;
+    passwordPepperKeyId?: string | null;
     storeId?: string;
     organizationId?: string | null;
   },
@@ -83,6 +85,7 @@ export function createRegisteredUser(
       lastName: input.lastName,
       email: input.email,
       password: input.password,
+      passwordPepperKeyId: input.passwordPepperKeyId,
       role: "EMPLOYEE",
       storeAccesses: input.storeId
         ? {
@@ -109,6 +112,7 @@ export async function updatePasswordAndRevokeOtherSessions(
   input: {
     userId: string;
     password: string;
+    passwordPepperKeyId?: string | null;
     keepSessionId?: string;
   },
   client: PrismaClientLike = prisma
@@ -119,6 +123,7 @@ export async function updatePasswordAndRevokeOtherSessions(
     },
     data: {
       password: input.password,
+      passwordPepperKeyId: input.passwordPepperKeyId,
     },
   });
 

@@ -7,7 +7,7 @@
 - Keep `REFRESH_IDEMPOTENCY_SECRET` different from password/token secrets. It encrypts short-lived refresh replay responses.
 - Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `SMTP_HOST` is missing, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
 - Run Prisma migrations before starting the API.
-- Before applying `20260610120000_auth_production_hardening`, backfill `Store.organizationId` for every existing store with `npm run tenant:backfill-stores`, then verify with `npm run tenant:preflight`.
+- Before applying `20260610120000_auth_production_hardening`, make sure `20260604103000_auth_multitenant_outbox_hardening` has added nullable `Store.organizationId`, backfill every existing store with `npm run tenant:backfill-stores`, then verify with `npm run tenant:preflight`.
 - Use HTTPS in production so refresh and CSRF cookies are sent with `secure: true`.
 - Run integration tests against a disposable PostgreSQL database before deploy.
 - Keep `EXPOSE_AUTH_TOKENS=false` outside automated tests and strict localhost development.
@@ -26,6 +26,7 @@ prisma/migrations/20260610120000_auth_production_hardening/migration.sql
 prisma/migrations/20260610143000_auth_operational_hardening/migration.sql
 prisma/migrations/20260610160000_auth_enterprise_foundation/migration.sql
 prisma/migrations/20260610170000_refresh_idempotency_key/migration.sql
+prisma/migrations/20260610180000_auth_final_guardrails/migration.sql
 ```
 
 If the production database is empty, apply migrations normally:
@@ -44,6 +45,7 @@ npx prisma migrate resolve --applied 20260610120000_auth_production_hardening
 npx prisma migrate resolve --applied 20260610143000_auth_operational_hardening
 npx prisma migrate resolve --applied 20260610160000_auth_enterprise_foundation
 npx prisma migrate resolve --applied 20260610170000_refresh_idempotency_key
+npx prisma migrate resolve --applied 20260610180000_auth_final_guardrails
 npx prisma migrate deploy
 ```
 
@@ -72,8 +74,9 @@ npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamode
 Email verification and password reset use an `EmailOutbox` table and SMTP through `nodemailer`. Auth flows enqueue email and do not depend on SMTP being available synchronously.
 Register, resend verification, and forgot-password create the auth token and outbox row in the same Prisma transaction. If the outbox insert fails, the business operation rolls back instead of leaving a user without a deliverable email.
 Outbox workers claim messages atomically with `PROCESSING`, `lockedAt`, and `lockedBy` before delivery to avoid duplicate sends when multiple workers run. Stale locks are recovered after `EMAIL_OUTBOX_LOCK_TIMEOUT_MS`.
+While SMTP delivery is running, the worker refreshes `lockedAt` every `EMAIL_OUTBOX_LOCK_HEARTBEAT_MS` so a slow provider call is not recovered as stale by another worker.
 Email `text` and `html` bodies are encrypted at rest with the active `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, then scrubbed after successful delivery. New encrypted values use the `enc:v1:<keyId>:<payload>` prefix. Existing legacy `enc:v1:<payload>` rows can be migrated with the maintenance job below.
-Every queued email stores a stable `messageId`. SMTP delivery uses that ID as the `Message-ID` header; this helps downstream providers deduplicate where supported. If SMTP succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
+Every queued email stores a stable `messageId` and `idempotencyKey`. SMTP delivery uses `messageId` as the `Message-ID` header; this helps downstream providers deduplicate where supported. If a future provider supports a first-class idempotency key, pass `EmailOutbox.idempotencyKey` to that provider API. If SMTP succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
 
 Required production variables:
 
@@ -86,6 +89,7 @@ SMTP_PASS=your-password
 SMTP_FROM=noreply@example.com
 EMAIL_OUTBOX_BATCH_SIZE=20
 EMAIL_OUTBOX_LOCK_TIMEOUT_MS=600000
+EMAIL_OUTBOX_LOCK_HEARTBEAT_MS=60000
 EMAIL_OUTBOX_ENCRYPTION_KEY_ID=key-2026-06
 EMAIL_OUTBOX_ENCRYPTION_KEY=replace-with-at-least-32-characters
 EMAIL_OUTBOX_ENCRYPTION_KEYS={"key-2026-06":"replace-with-at-least-32-characters","key-2026-01":"previous-key-at-least-32-characters"}
@@ -153,6 +157,7 @@ PASSWORD_HISTORY_LIMIT=5
 ```
 
 `PASSWORD_HISTORY_LIMIT` prevents users from reusing the current password or recently stored password hashes during password reset and password change. Set it to `0` only for local debugging.
+`PASSWORD_PEPPER_KEY_ID` and `PASSWORD_PEPPER_KEYS` allow progressive password pepper rotation. New password hashes store the active key id; verification can still test previous keys during the rotation window.
 
 ## Observability
 
@@ -216,6 +221,8 @@ npm run predeploy:auth
 
 If `tenant:preflight` fails, configure `STORE_ORGANIZATION_BACKFILL_MAP`, run `npm run tenant:backfill-stores`, then rerun `npm run predeploy:auth`.
 
+If `tenant:preflight` says `Store.organizationId` does not exist, the target DB is before the nullable tenant migration. Apply `20260604103000_auth_multitenant_outbox_hardening` first, resolve it in Prisma migration history, then run the backfill/preflight sequence.
+
 Integration test with PostgreSQL:
 
 ```powershell
@@ -230,6 +237,17 @@ npm run test:integration
 ```
 
 Use a disposable test database. The integration test creates and deletes its own user, but it should not run against production data.
+`npm run test:integration` now fails if `NODE_ENV=test`, `RUN_DB_TESTS=true`, or a safe-looking test/local `DATABASE_URL` is missing. For local smoke checks where skipped DB tests are intentional, use:
+
+```powershell
+npm run test:integration:optional
+```
+
+CI can keep using the compatibility alias below:
+
+```powershell
+npm run test:integration:db
+```
 
 ## Maintenance Jobs
 
@@ -237,6 +255,13 @@ Remove expired auth tokens, old refresh tokens, old login attempts, and stale lo
 
 ```powershell
 npm run tokens:cleanup
+```
+
+For simple deployments, the API can run this cleanup periodically:
+
+```env
+TOKEN_CLEANUP_WORKER_ENABLED=true
+TOKEN_CLEANUP_WORKER_INTERVAL_MS=3600000
 ```
 
 Before applying the tenant hardening migration on an existing database:
@@ -259,6 +284,7 @@ npx prisma db seed
 - Access tokens include `iss`, `aud`, and `jti`; protected routes verify those claims and reload session/user state from PostgreSQL.
 - Refresh tokens are opaque random tokens stored as HMAC hashes.
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.
+- New password hashes store `passwordPepperKeyId` to support controlled pepper rotation.
 - Refresh token rotation is atomic and revokes the token family when reuse is detected outside the short concurrent refresh grace window.
 - Each normal refresh writes a `RefreshRotation` row for observability and controlled same-context replay handling.
 - Clients can send `Idempotency-Key` or `x-idempotency-key` on `POST /api/auth/refresh`. For the same old cookie, same context and same key, the API can replay the same rotated refresh cookie for `REFRESH_IDEMPOTENCY_TTL_MS`, default 60 seconds.
@@ -288,8 +314,8 @@ The schema includes foundational enterprise tables that are intentionally not ex
 
 - `SecurityEvent`: normalized auth/security event stream for SIEM, alerting and incident search.
 - `PasswordHistory`: recent password hashes used to prevent password reuse.
-- `ApiKey`: hashed API key storage for future machine-to-machine integrations.
-- `MfaFactor` and `MfaChallenge`: MFA enrollment/challenge foundation for TOTP, WebAuthn and recovery-code flows.
+- `ApiKey`: hashed API key storage for future machine-to-machine integrations. Exactly one owner is allowed by database constraint, either user or organization.
+- `MfaFactor` and `MfaChallenge`: MFA enrollment/challenge foundation for TOTP, WebAuthn and recovery-code flows. TOTP secrets must be stored encrypted in `encryptedSecret` with `encryptionKeyId`; do not store recoverable MFA secrets as hashes.
 
 Do not enable API key or MFA endpoints until scopes, enrollment policy, recovery policy, lockout behavior and audit requirements are defined.
 

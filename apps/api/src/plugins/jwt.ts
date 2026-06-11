@@ -8,5 +8,11 @@ export default fp(async (app) => {
 
   await app.register(jwt, {
     secret: env.JWT_ACCESS_SECRET,
+    sign: {
+      algorithm: "HS256",
+    },
+    verify: {
+      algorithms: ["HS256"],
+    },
   });
 });

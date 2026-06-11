@@ -1,13 +1,22 @@
 import { env } from "../../config/env";
 import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
-import { verifyPassword } from "../../utils/hash";
+import {
+  activePasswordPepperKeyId,
+  verifyPassword,
+} from "../../utils/hash";
 import type { PrismaClientLike } from "./auth.repository";
+
+type PasswordHashCandidate = {
+  passwordHash: string;
+  passwordPepperKeyId?: string | null;
+};
 
 export async function assertPasswordNotRecentlyUsed(
   userId: string,
   password: string,
   currentPasswordHash?: string | null,
+  currentPasswordPepperKeyId?: string | null,
   client: PrismaClientLike = prisma
 ) {
   if (env.PASSWORD_HISTORY_LIMIT === 0) {
@@ -24,15 +33,36 @@ export async function assertPasswordNotRecentlyUsed(
     take: env.PASSWORD_HISTORY_LIMIT,
     select: {
       passwordHash: true,
+      passwordPepperKeyId: true,
     },
   });
-  const hashes = [
-    ...(currentPasswordHash ? [currentPasswordHash] : []),
-    ...recent.map((entry) => entry.passwordHash),
+  const candidates: PasswordHashCandidate[] = [
+    ...(currentPasswordHash
+      ? [
+          {
+            passwordHash: currentPasswordHash,
+            passwordPepperKeyId: currentPasswordPepperKeyId,
+          },
+        ]
+      : []),
+    ...recent,
   ];
+  const seen = new Set<string>();
 
-  for (const hash of [...new Set(hashes)]) {
-    if (await verifyPassword(password, hash)) {
+  for (const candidate of candidates) {
+    if (seen.has(candidate.passwordHash)) {
+      continue;
+    }
+
+    seen.add(candidate.passwordHash);
+
+    if (
+      await verifyPassword(
+        password,
+        candidate.passwordHash,
+        candidate.passwordPepperKeyId
+      )
+    ) {
       throw new AuthError(
         "AUTH_PASSWORD_REUSED",
         "Password was used recently",
@@ -55,6 +85,7 @@ export async function rememberPassword(
     data: {
       userId,
       passwordHash,
+      passwordPepperKeyId: activePasswordPepperKeyId(),
     },
   });
 

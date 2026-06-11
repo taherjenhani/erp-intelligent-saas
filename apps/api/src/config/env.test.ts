@@ -128,3 +128,27 @@ test("parseEnv validates email outbox keyring and active key id", () => {
 
   assert.equal(parsed.EMAIL_OUTBOX_ENCRYPTION_KEY_ID, "key-2026-06");
 });
+
+test("parseEnv validates password pepper keyring and active key id", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    PASSWORD_PEPPER_KEY_ID: "pepper-2026-06",
+    PASSWORD_PEPPER: "active_password_pepper_minimum_32_chars",
+    PASSWORD_PEPPER_KEYS: JSON.stringify({
+      "pepper-2026-06": "active_password_pepper_minimum_32_chars",
+      "pepper-2026-01": "previous_password_pepper_minimum_32_chars",
+    }),
+  });
+
+  assert.equal(parsed.PASSWORD_PEPPER_KEY_ID, "pepper-2026-06");
+});
+
+test("parseEnv requires outbox heartbeat lower than lock timeout", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      EMAIL_OUTBOX_LOCK_TIMEOUT_MS: "60000",
+      EMAIL_OUTBOX_LOCK_HEARTBEAT_MS: "60000",
+    })
+  );
+});

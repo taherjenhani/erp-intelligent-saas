@@ -7,7 +7,10 @@ import {
 } from "../../lib/email";
 import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
-import { hashPassword } from "../../utils/hash";
+import {
+  activePasswordPepperKeyId,
+  hashPassword,
+} from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
 import { toPublicUser } from "./auth.mapper";
 import {
@@ -74,6 +77,7 @@ export async function registerUser(
         lastName: data.lastName.trim(),
         email,
         password: hashedPassword,
+        passwordPepperKeyId: activePasswordPepperKeyId(),
         storeId: data.storeId,
         organizationId: storeOrganizationId,
       }, tx);

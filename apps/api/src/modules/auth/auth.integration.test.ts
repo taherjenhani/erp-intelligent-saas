@@ -617,6 +617,7 @@ test("email outbox legacy encryption scrubs sent rows and rotates pending rows",
     await prisma.emailOutbox.create({
       data: {
         messageId: `<legacy-sent-${Date.now()}@example.com>`,
+        idempotencyKey: `legacy-sent-${Date.now()}`,
         to: sentTo,
         subject: "Legacy sent",
         text: `sensitive ${secret}`,
@@ -628,6 +629,7 @@ test("email outbox legacy encryption scrubs sent rows and rotates pending rows",
     await prisma.emailOutbox.create({
       data: {
         messageId: `<legacy-pending-${Date.now()}@example.com>`,
+        idempotencyKey: `legacy-pending-${Date.now()}`,
         to: pendingTo,
         subject: "Legacy pending",
         text: `pending ${secret}`,

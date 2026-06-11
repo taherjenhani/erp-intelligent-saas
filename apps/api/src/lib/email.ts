@@ -10,6 +10,7 @@ type PrismaClientLike = Prisma.TransactionClient | typeof prisma;
 
 type EmailMessage = {
   messageId?: string;
+  idempotencyKey?: string;
   to: string;
   subject: string;
   text: string;
@@ -416,15 +417,34 @@ async function deliverOutboxEmail(email: EmailOutbox) {
   }
 
   let deliveryResult: Awaited<ReturnType<typeof deliverEmail>>;
+  const heartbeat = setInterval(() => {
+    void prisma.emailOutbox
+      .updateMany({
+        where: {
+          id: email.id,
+          status: "PROCESSING",
+          lockedBy: lockOwner,
+        },
+        data: {
+          lockedAt: new Date(),
+        },
+      })
+      .catch((error) => {
+        console.error("Email outbox heartbeat failed", error);
+      });
+  }, env.EMAIL_OUTBOX_LOCK_HEARTBEAT_MS);
 
   try {
     deliveryResult = await deliverEmail(
       decryptEmailMessageFromStorage(email)
     );
   } catch (error) {
+    clearInterval(heartbeat);
     await markDeliveryFailed(email, lockOwner, error);
     return;
   }
+
+  clearInterval(heartbeat);
 
   try {
     const updated = await prisma.emailOutbox.updateMany({
@@ -485,10 +505,12 @@ export async function enqueueEmail(
   message: EmailMessage
 ) {
   const messageId = message.messageId ?? createEmailMessageId();
+  const idempotencyKey = message.idempotencyKey ?? messageId;
 
   return client.emailOutbox.create({
     data: {
       messageId,
+      idempotencyKey,
       ...encryptEmailMessageForStorage({
         ...message,
         messageId,

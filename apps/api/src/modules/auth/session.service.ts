@@ -641,7 +641,8 @@ export async function loginUser(
 
   const isPasswordValid = await verifyPassword(
     data.password,
-    user.password
+    user.password,
+    user.passwordPepperKeyId
   );
 
   if (!isPasswordValid) {

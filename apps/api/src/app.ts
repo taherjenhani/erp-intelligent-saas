@@ -9,6 +9,7 @@ import jwtPlugin from "./plugins/jwt";
 import metricsPlugin from "./plugins/metrics";
 import requestContextPlugin from "./plugins/requestContext";
 import securityPlugin from "./plugins/security";
+import tokenCleanupWorkerPlugin from "./plugins/tokenCleanupWorker";
 
 export function buildApp() {
   const app = Fastify({
@@ -22,6 +23,7 @@ export function buildApp() {
   app.register(jwtPlugin);
   app.register(securityPlugin);
   app.register(emailOutboxWorkerPlugin);
+  app.register(tokenCleanupWorkerPlugin);
   app.register(errorHandlerPlugin);
   app.register(metricsPlugin);
 

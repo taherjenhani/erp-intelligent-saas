@@ -77,3 +77,59 @@ export async function consumeAuthToken(
 
   return authToken;
 }
+
+export async function findValidAuthToken(
+  token: string,
+  purpose: AuthTokenPurpose,
+  errorCode:
+    | "AUTH_INVALID_RESET_TOKEN"
+    | "AUTH_INVALID_VERIFICATION_TOKEN",
+  client: PrismaClientLike = prisma
+) {
+  const now = new Date();
+  const tokenHashes = await getTokenHashCandidates(token);
+  const authToken = await client.authToken.findFirst({
+    where: {
+      tokenHash: {
+        in: tokenHashes,
+      },
+      purpose,
+      usedAt: null,
+      expiresAt: {
+        gt: now,
+      },
+    },
+  });
+
+  if (!authToken) {
+    throw new AuthError(errorCode, "Invalid or expired token");
+  }
+
+  return authToken;
+}
+
+export async function markAuthTokenUsed(
+  authTokenId: string,
+  errorCode:
+    | "AUTH_INVALID_RESET_TOKEN"
+    | "AUTH_INVALID_VERIFICATION_TOKEN",
+  client: PrismaClientLike = prisma
+) {
+  const now = new Date();
+  const consumed = await client.authToken.updateMany({
+    where: {
+      id: authTokenId,
+      usedAt: null,
+      expiresAt: {
+        gt: now,
+      },
+    },
+    data: {
+      usedAt: now,
+    },
+  });
+
+  if (consumed.count !== 1) {
+    throw new AuthError(errorCode, "Invalid or expired token");
+  }
+}

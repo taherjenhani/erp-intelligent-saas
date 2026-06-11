@@ -38,7 +38,9 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
   }
 
   await app.register(helmet, {
-    contentSecurityPolicy: false,
+    contentSecurityPolicy: env.HELMET_CSP_ENABLED
+      ? undefined
+      : false,
   });
 
   await app.register(cors, {
