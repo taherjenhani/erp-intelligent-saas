@@ -5,6 +5,7 @@ import type {
 } from "@prisma/client";
 
 import { incrementCounter } from "./metrics";
+import { reportOperationalError } from "./operationalErrors";
 import { prisma } from "./prisma";
 
 type SecurityEventInput = {
@@ -50,6 +51,11 @@ export async function writeSecurityEvent(input: SecurityEventInput) {
         status: "failure",
       }
     );
-    console.error("Security event write failed", error);
+    reportOperationalError("security_event_write_failed", error, {
+      type: input.type,
+      severity: input.severity ?? "INFO",
+      userId: input.userId,
+      correlationId: input.correlationId,
+    });
   }
 }

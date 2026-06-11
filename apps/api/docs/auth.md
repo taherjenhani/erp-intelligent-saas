@@ -70,6 +70,18 @@ Then verify migrations against the Prisma schema:
 npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url $env:SHADOW_DATABASE_URL --exit-code
 ```
 
+## Service Architecture
+
+The auth module keeps route/controller code thin and moves stateful auth logic into focused services:
+
+- `session.service.ts`: login orchestration, refresh rotation and logout workflows.
+- `login-lock.service.ts`: DB-backed `LoginAttempt` and `LoginLock` behavior.
+- `password.service.ts`: forgot/reset/change password workflows.
+- `email-verification.service.ts`: verification token and resend workflows.
+- `auth.repository.ts`: shared Prisma access for users, sessions, refresh tokens and password/session revocation.
+
+Refresh rotation remains inside `session.service.ts` because it is an atomic security workflow with several policy checks. New ERP modules should avoid direct Prisma access for auth-owned state and add repository helpers instead.
+
 ## Email Delivery
 
 Email verification and password reset use an `EmailOutbox` table and a configured email provider. Auth flows enqueue email and do not depend on the provider being available synchronously.
@@ -177,7 +189,7 @@ PASSWORD_HISTORY_LIMIT=5
 
 Requests accept `x-request-id` and `x-correlation-id` only when the value is short and header-safe. The API echoes safe IDs in responses, includes `correlationId` in error payloads, and stores it in an indexed `AuditLog.correlationId` column.
 Reverse proxies should pass `x-request-id` or `x-correlation-id` from trusted clients only after applying their own length/charset limits. Frontend clients should read `x-correlation-id` from failed responses and attach it to support/error reports.
-Auth audit writes also create normalized `SecurityEvent` rows for SIEM-style querying by type, severity, user, correlation ID, and timestamp.
+Auth audit writes also create normalized `SecurityEvent` rows for SIEM-style querying by type, severity, user, correlation ID, and timestamp. Audit and security-event persistence failures are non-blocking for user auth, but they emit structured operational error logs and increment failure counters that are covered by Prometheus alerts.
 
 Metrics are disabled by default. Enable them only for internal scraping. `METRICS_TOKEN` is required whenever `METRICS_ENABLED=true`, including non-production environments:
 
@@ -209,7 +221,7 @@ Current metrics include:
 Alert on `erp_email_outbox_delivery_total{status="sent_unknown"}`. It means SMTP reported success but the API could not persist the final `SENT` state; retrying those rows manually can send duplicates.
 The Prometheus rule is provided in `apps/api/monitoring/prometheus-alerts.yml`.
 
-In multi-instance deployments these metrics are process-local. Set a stable `METRICS_INSTANCE_ID` per instance, scrape every API instance, or export them to Prometheus/OpenTelemetry through the platform collector. Do not use one instance's `/metrics` endpoint as a global source of truth.
+In multi-instance deployments these metrics are process-local. Set a stable `METRICS_INSTANCE_ID` per instance, scrape every API instance, or export them to Prometheus/OpenTelemetry through the platform collector. When metrics are enabled, all emitted samples include the configured `instance` and `node_env` default labels. Do not use one instance's `/metrics` endpoint as a global source of truth.
 
 ## Tests
 

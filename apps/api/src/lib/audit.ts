@@ -6,6 +6,7 @@ import type {
 } from "@prisma/client";
 
 import { incrementCounter } from "./metrics";
+import { reportOperationalError } from "./operationalErrors";
 import { prisma } from "./prisma";
 import { writeSecurityEvent } from "./securityEvents";
 
@@ -97,6 +98,10 @@ export async function writeAuditLog(input: AuditInput) {
         status: "failure",
       }
     );
-    console.error("Audit log failed", error);
+    reportOperationalError("audit_log_write_failed", error, {
+      action: input.action,
+      userId: input.userId,
+      correlationId: input.correlationId,
+    });
   }
 }

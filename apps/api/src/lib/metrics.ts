@@ -11,6 +11,11 @@ type MetricSample = {
 };
 
 const samples = new Map<string, MetricSample>();
+let defaultLabels: Record<string, string> = {};
+
+export function configureMetricDefaultLabels(labels: MetricLabels) {
+  defaultLabels = normalizeLabels(labels);
+}
 
 function normalizeLabels(labels: MetricLabels = {}) {
   return Object.fromEntries(
@@ -31,7 +36,10 @@ function getSample(
   type: "counter" | "gauge",
   labels: MetricLabels
 ) {
-  const normalizedLabels = normalizeLabels(labels);
+  const normalizedLabels = normalizeLabels({
+    ...defaultLabels,
+    ...labels,
+  });
   const key = sampleKey(name, normalizedLabels);
   const sample = samples.get(key);
 
@@ -107,4 +115,5 @@ export function renderMetrics() {
 
 export function resetMetricsForTests() {
   samples.clear();
+  defaultLabels = {};
 }

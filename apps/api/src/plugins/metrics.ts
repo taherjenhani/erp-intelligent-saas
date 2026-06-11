@@ -4,7 +4,11 @@ import crypto from "crypto";
 import os from "os";
 
 import { env } from "../config/env";
-import { renderMetrics, setGauge } from "../lib/metrics";
+import {
+  configureMetricDefaultLabels,
+  renderMetrics,
+  setGauge,
+} from "../lib/metrics";
 
 function hasValidMetricsToken(authorization: string | undefined) {
   const expected = `Bearer ${env.METRICS_TOKEN}`;
@@ -27,16 +31,18 @@ const metricsPlugin: FastifyPluginAsync = async (app) => {
     return;
   }
 
+  const instance =
+    env.METRICS_INSTANCE_ID ?? process.env.HOSTNAME ?? os.hostname();
+
+  configureMetricDefaultLabels({
+    instance,
+    node_env: env.NODE_ENV,
+  });
+
   setGauge(
     "erp_api_instance_info",
     "API instance identity for per-instance metric scraping.",
-    {
-      instance:
-        env.METRICS_INSTANCE_ID ??
-        process.env.HOSTNAME ??
-        os.hostname(),
-      node_env: env.NODE_ENV,
-    },
+    {},
     1
   );
 

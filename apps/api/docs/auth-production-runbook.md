@@ -83,7 +83,8 @@ Set `NODE_ENV=test` and `RUN_DB_TESTS=true`. `npm run test:integration` and `npm
 ## 6. Check Remaining Known Risks
 
 - Metrics are in-memory per process. Scrape every instance or export through OpenTelemetry/Prometheus infrastructure.
-- Set a stable `METRICS_INSTANCE_ID` for each instance so dashboards and alerts can identify which process emitted a sample.
+- Set a stable `METRICS_INSTANCE_ID` for each instance; emitted samples include `instance` and `node_env` labels after the metrics plugin is enabled.
+- Keep the provided audit/security-event failure alerts active. Audit writes are best-effort for auth availability, so alerting is the production safety net when persistence fails.
 - Email outbox encryption keys are env-managed. Move to KMS/Vault before enterprise production with strict key custody requirements.
 - Configure `EMAIL_OUTBOX_LOCK_HEARTBEAT_MS` and `EMAIL_PROVIDER_TIMEOUT_MS` lower than `EMAIL_OUTBOX_LOCK_TIMEOUT_MS` so slow deliveries do not get recovered by another worker.
 - Enable `TOKEN_CLEANUP_WORKER_ENABLED=true` or schedule `npm run tokens:cleanup` externally and set `TOKEN_CLEANUP_EXTERNAL_SCHEDULED=true`.

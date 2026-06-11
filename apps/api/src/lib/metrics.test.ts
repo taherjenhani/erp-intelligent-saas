@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  configureMetricDefaultLabels,
   incrementCounter,
   renderMetrics,
   resetMetricsForTests,
@@ -47,5 +48,30 @@ test("metrics render counters and gauges in prometheus text format", () => {
   assert.match(
     output,
     /erp_api_instance_info\{instance="api-1",node_env="test"\} 1/
+  );
+});
+
+test("metrics apply configured per-instance default labels", () => {
+  resetMetricsForTests();
+  configureMetricDefaultLabels({
+    instance: "api-test-1",
+    node_env: "test",
+  });
+
+  incrementCounter(
+    "erp_security_event_total",
+    "Total security events by type, severity, and status.",
+    {
+      type: "LOGIN_FAILED",
+      severity: "LOW",
+      status: "failure",
+    }
+  );
+
+  const output = renderMetrics();
+
+  assert.match(
+    output,
+    /erp_security_event_total\{instance="api-test-1",node_env="test",severity="LOW",status="failure",type="LOGIN_FAILED"\} 1/
   );
 });
