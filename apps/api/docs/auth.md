@@ -7,6 +7,7 @@
 - Keep `REFRESH_IDEMPOTENCY_SECRET` different from password/token secrets. It encrypts short-lived refresh replay responses.
 - Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, SMTP best-effort mode is not explicitly allowed, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
 - Production also requires token cleanup to be scheduled through `TOKEN_CLEANUP_WORKER_ENABLED=true` or `TOKEN_CLEANUP_EXTERNAL_SCHEDULED=true`.
+- If this API serves HTML/docs/static web content, set `SERVE_WEB_CONTENT=true` and `HELMET_CSP_ENABLED=true`; API-only deployments can keep CSP disabled while retaining other Helmet headers.
 - Run Prisma migrations before starting the API.
 - Before applying `20260610120000_auth_production_hardening`, make sure `20260604103000_auth_multitenant_outbox_hardening` has added nullable `Store.organizationId`, backfill every existing store with `npm run tenant:backfill-stores`, then verify with `npm run tenant:preflight`.
 - Use HTTPS in production so refresh and CSRF cookies are sent with `secure: true`.
@@ -183,7 +184,7 @@ PASSWORD_HISTORY_LIMIT=5
 ```
 
 `PASSWORD_HISTORY_LIMIT` prevents users from reusing the current password or recently stored password hashes during password reset and password change. Set it to `0` only for local debugging.
-`PASSWORD_PEPPER_KEY_ID` and `PASSWORD_PEPPER_KEYS` allow progressive password pepper rotation. New password hashes store the active key id; verification can still test previous keys during the rotation window.
+`PASSWORD_PEPPER_KEY_ID` and `PASSWORD_PEPPER_KEYS` allow progressive password pepper rotation. New password hashes store the active key id; verification can still test previous keys during the rotation window. On a successful login with an older or missing pepper key id, the password hash is transparently rehashed with the active pepper key using an atomic compare-and-update.
 
 ## Observability
 
@@ -238,6 +239,7 @@ npm run audit:ci
 ```
 
 `audit:ci` currently blocks high and critical vulnerabilities. `npm audit --audit-level=moderate` still reports Prisma/Hono advisories without an upstream fix; track them through Dependabot and upgrade Prisma/Hono when patched versions are available.
+Dependabot is configured in `.github/dependabot.yml` for `/apps/api`, grouped for Prisma and API security dependencies.
 
 Pre-deploy auth gate for a target database after any required tenant backfill:
 
@@ -310,6 +312,7 @@ npx prisma db seed
 ## Token Model
 
 - Access tokens are JWTs with a short lifetime.
+- JWT signing and verification explicitly restrict the algorithm to `HS256`.
 - Access tokens include `iss`, `aud`, and `jti`; protected routes verify those claims and reload session/user state from PostgreSQL.
 - Refresh tokens are opaque random tokens stored as HMAC hashes.
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.
@@ -330,6 +333,7 @@ npx prisma db seed
 
 Use `requireStoreRole("storeId", ["MANAGER", "ADMIN"])` or `requireStorePermission("storeId", "stores.write")` on store-scoped routes.
 When a route contains both `organizationId` and `storeId`, add `requireStoreInOrganization("storeId", "organizationId")` before the permission guard.
+RBAC guards are unit-tested through dependency injection for store permission, organization role/permission and store-organization boundary scenarios.
 
 ## Organization-Level RBAC
 

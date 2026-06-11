@@ -143,6 +143,19 @@ test("parseEnv validates password pepper keyring and active key id", () => {
   assert.equal(parsed.PASSWORD_PEPPER_KEY_ID, "pepper-2026-06");
 });
 
+test("parseEnv requires active password pepper keyring secret to match PASSWORD_PEPPER", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      PASSWORD_PEPPER_KEY_ID: "pepper-2026-06",
+      PASSWORD_PEPPER: "active_password_pepper_minimum_32_chars",
+      PASSWORD_PEPPER_KEYS: JSON.stringify({
+        "pepper-2026-06": "different_password_pepper_minimum_32_chars",
+      }),
+    })
+  );
+});
+
 test("parseEnv requires outbox heartbeat lower than lock timeout", () => {
   assert.throws(() =>
     parseEnv({
@@ -241,6 +254,29 @@ test("parseEnv requires production token cleanup schedule", () => {
       TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
       REFRESH_IDEMPOTENCY_SECRET:
         "production_refresh_idempotency_secret_minimum_32_chars",
+    })
+  );
+});
+
+test("parseEnv requires CSP when serving web content in production", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      NODE_ENV: "production",
+      APP_URL: "https://app.example.com",
+      CORS_ORIGIN: "https://app.example.com",
+      EMAIL_PROVIDER: "http",
+      EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
+      EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",
+      RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+      EMAIL_OUTBOX_ENCRYPTION_KEY:
+        "production_email_outbox_encryption_key_minimum_32_chars",
+      CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
+      TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
+      REFRESH_IDEMPOTENCY_SECRET:
+        "production_refresh_idempotency_secret_minimum_32_chars",
+      TOKEN_CLEANUP_EXTERNAL_SCHEDULED: "true",
+      SERVE_WEB_CONTENT: "true",
     })
   );
 });

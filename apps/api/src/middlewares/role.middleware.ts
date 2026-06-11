@@ -5,11 +5,29 @@ import { writeAuditLog } from "../lib/audit";
 import { PermissionError } from "../lib/errors";
 import { prisma } from "../lib/prisma";
 
+type DeniedAuditWriter = typeof writeAuditLog;
+
+export type RoleAccess = {
+  roleHasPermission(role: Role, permissionKey: string): Promise<boolean>;
+  activeOrganizationExists(organizationId: string): Promise<boolean>;
+  activeStoreExists(storeId: string): Promise<boolean>;
+  storeBelongsToOrganization(
+    storeId: string,
+    organizationId: string
+  ): Promise<boolean>;
+};
+
+export type RoleGuardOptions = {
+  access?: Partial<RoleAccess>;
+  writeDeniedAudit?: DeniedAuditWriter;
+};
+
 async function denyAccess(
   request: FastifyRequest,
-  metadata: Record<string, unknown>
+  metadata: Record<string, unknown>,
+  writeDeniedAudit: DeniedAuditWriter = writeAuditLog
 ): Promise<never> {
-  await writeAuditLog({
+  await writeDeniedAudit({
     action: "ACCESS_DENIED",
     userId: request.auth?.userId,
     ipAddress: request.ip,
@@ -71,69 +89,44 @@ async function activeStoreExists(storeId: string) {
   return Boolean(store);
 }
 
-export function requireRole(roles: Role[]) {
-  return async function (
-    request: FastifyRequest,
-    _reply: FastifyReply
-  ) {
-    const auth = request.auth;
+async function storeBelongsToOrganization(
+  storeId: string,
+  organizationId: string
+) {
+  const store = await prisma.store.findFirst({
+    where: {
+      id: storeId,
+      organizationId,
+      isActive: true,
+      organization: {
+        isActive: true,
+      },
+    },
+    select: {
+      id: true,
+    },
+  });
 
-    if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
-    }
+  return Boolean(store);
+}
 
-    if (!roles.includes(auth.role)) {
-      await denyAccess(request, {
-        reason: "role_not_allowed",
-        requiredRoles: roles,
-      });
-    }
+const defaultRoleAccess: RoleAccess = {
+  roleHasPermission,
+  activeOrganizationExists,
+  activeStoreExists,
+  storeBelongsToOrganization,
+};
+
+function roleAccess(options: RoleGuardOptions): RoleAccess {
+  return {
+    ...defaultRoleAccess,
+    ...options.access,
   };
 }
 
-export function requirePlatformRole(roles: PlatformRole[]) {
-  return async function (
-    request: FastifyRequest,
-    _reply: FastifyReply
-  ) {
-    const auth = request.auth;
-
-    if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
-    }
-
-    if (!roles.includes(auth.platformRole)) {
-      await denyAccess(request, {
-        reason: "platform_role_not_allowed",
-        requiredPlatformRoles: roles,
-      });
-    }
-  };
-}
-
-export function requirePermission(permissionKey: string) {
-  return async function (
-    request: FastifyRequest,
-    _reply: FastifyReply
-  ) {
-    const auth = request.auth;
-
-    if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
-    }
-
-    if (!(await roleHasPermission(auth.role, permissionKey))) {
-      await denyAccess(request, {
-        reason: "permission_missing",
-        permissionKey,
-      });
-    }
-  };
-}
-
-export function requireStorePermission(
-  storeIdParam: string,
-  permissionKey: string
+export function requireRole(
+  roles: Role[],
+  options: RoleGuardOptions = {}
 ) {
   return async function (
     request: FastifyRequest,
@@ -142,7 +135,109 @@ export function requireStorePermission(
     const auth = request.auth;
 
     if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
+    }
+
+    if (!roles.includes(auth.role)) {
+      await denyAccess(
+        request,
+        {
+          reason: "role_not_allowed",
+          requiredRoles: roles,
+        },
+        options.writeDeniedAudit
+      );
+    }
+  };
+}
+
+export function requirePlatformRole(
+  roles: PlatformRole[],
+  options: RoleGuardOptions = {}
+) {
+  return async function (
+    request: FastifyRequest,
+    _reply: FastifyReply
+  ) {
+    const auth = request.auth;
+
+    if (!auth) {
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
+    }
+
+    if (!roles.includes(auth.platformRole)) {
+      await denyAccess(
+        request,
+        {
+          reason: "platform_role_not_allowed",
+          requiredPlatformRoles: roles,
+        },
+        options.writeDeniedAudit
+      );
+    }
+  };
+}
+
+export function requirePermission(
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  const access = roleAccess(options);
+
+  return async function (
+    request: FastifyRequest,
+    _reply: FastifyReply
+  ) {
+    const auth = request.auth;
+
+    if (!auth) {
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
+    }
+
+    if (!(await access.roleHasPermission(auth.role, permissionKey))) {
+      await denyAccess(
+        request,
+        {
+          reason: "permission_missing",
+          permissionKey,
+        },
+        options.writeDeniedAudit
+      );
+    }
+  };
+}
+
+export function requireStorePermission(
+  storeIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  const access = roleAccess(options);
+
+  return async function (
+    request: FastifyRequest,
+    _reply: FastifyReply
+  ) {
+    const auth = request.auth;
+
+    if (!auth) {
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
     }
 
     const storeId =
@@ -151,17 +246,25 @@ export function requireStorePermission(
       ];
 
     if (!storeId) {
-      return await denyAccess(request, {
-        reason: "missing_store_id",
-        storeIdParam,
-      });
+      return await denyAccess(
+        request,
+        {
+          reason: "missing_store_id",
+          storeIdParam,
+        },
+        options.writeDeniedAudit
+      );
     }
 
-    if (!(await activeStoreExists(storeId))) {
-      return await denyAccess(request, {
-        reason: "store_inactive_or_missing",
-        storeId,
-      });
+    if (!(await access.activeStoreExists(storeId))) {
+      return await denyAccess(
+        request,
+        {
+          reason: "store_inactive_or_missing",
+          storeId,
+        },
+        options.writeDeniedAudit
+      );
     }
 
     const role =
@@ -169,20 +272,27 @@ export function requireStorePermission(
         ? "SUPER_ADMIN"
         : auth.storeRoles[storeId];
 
-    if (!role || !(await roleHasPermission(role, permissionKey))) {
-      await denyAccess(request, {
-        reason: "store_permission_missing",
-        storeId,
-        permissionKey,
-      });
+    if (!role || !(await access.roleHasPermission(role, permissionKey))) {
+      await denyAccess(
+        request,
+        {
+          reason: "store_permission_missing",
+          storeId,
+          permissionKey,
+        },
+        options.writeDeniedAudit
+      );
     }
   };
 }
 
 export function requireOrganizationRole(
   organizationIdParam: string,
-  roles: Role[]
+  roles: Role[],
+  options: RoleGuardOptions = {}
 ) {
+  const access = roleAccess(options);
+
   return async function (
     request: FastifyRequest,
     _reply: FastifyReply
@@ -190,7 +300,11 @@ export function requireOrganizationRole(
     const auth = request.auth;
 
     if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
     }
 
     const organizationId =
@@ -199,17 +313,25 @@ export function requireOrganizationRole(
       ];
 
     if (!organizationId) {
-      return await denyAccess(request, {
-        reason: "missing_organization_id",
-        organizationIdParam,
-      });
+      return await denyAccess(
+        request,
+        {
+          reason: "missing_organization_id",
+          organizationIdParam,
+        },
+        options.writeDeniedAudit
+      );
     }
 
-    if (!(await activeOrganizationExists(organizationId))) {
-      return await denyAccess(request, {
-        reason: "organization_inactive_or_missing",
-        organizationId,
-      });
+    if (!(await access.activeOrganizationExists(organizationId))) {
+      return await denyAccess(
+        request,
+        {
+          reason: "organization_inactive_or_missing",
+          organizationId,
+        },
+        options.writeDeniedAudit
+      );
     }
 
     if (auth.platformRole === "SUPER_ADMIN") {
@@ -220,19 +342,26 @@ export function requireOrganizationRole(
       auth.organizationRoles[organizationId];
 
     if (!organizationRole || !roles.includes(organizationRole)) {
-      await denyAccess(request, {
-        reason: "organization_role_not_allowed",
-        organizationId,
-        requiredRoles: roles,
-      });
+      await denyAccess(
+        request,
+        {
+          reason: "organization_role_not_allowed",
+          organizationId,
+          requiredRoles: roles,
+        },
+        options.writeDeniedAudit
+      );
     }
   };
 }
 
 export function requireOrganizationPermission(
   organizationIdParam: string,
-  permissionKey: string
+  permissionKey: string,
+  options: RoleGuardOptions = {}
 ) {
+  const access = roleAccess(options);
+
   return async function (
     request: FastifyRequest,
     _reply: FastifyReply
@@ -240,7 +369,11 @@ export function requireOrganizationPermission(
     const auth = request.auth;
 
     if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
     }
 
     const organizationId =
@@ -249,17 +382,25 @@ export function requireOrganizationPermission(
       ];
 
     if (!organizationId) {
-      return await denyAccess(request, {
-        reason: "missing_organization_id",
-        organizationIdParam,
-      });
+      return await denyAccess(
+        request,
+        {
+          reason: "missing_organization_id",
+          organizationIdParam,
+        },
+        options.writeDeniedAudit
+      );
     }
 
-    if (!(await activeOrganizationExists(organizationId))) {
-      return await denyAccess(request, {
-        reason: "organization_inactive_or_missing",
-        organizationId,
-      });
+    if (!(await access.activeOrganizationExists(organizationId))) {
+      return await denyAccess(
+        request,
+        {
+          reason: "organization_inactive_or_missing",
+          organizationId,
+        },
+        options.writeDeniedAudit
+      );
     }
 
     const role =
@@ -267,20 +408,27 @@ export function requireOrganizationPermission(
         ? "SUPER_ADMIN"
         : auth.organizationRoles[organizationId];
 
-    if (!role || !(await roleHasPermission(role, permissionKey))) {
-      await denyAccess(request, {
-        reason: "organization_permission_missing",
-        organizationId,
-        permissionKey,
-      });
+    if (!role || !(await access.roleHasPermission(role, permissionKey))) {
+      await denyAccess(
+        request,
+        {
+          reason: "organization_permission_missing",
+          organizationId,
+          permissionKey,
+        },
+        options.writeDeniedAudit
+      );
     }
   };
 }
 
 export function requireStoreRole(
   storeIdParam: string,
-  roles: Role[]
+  roles: Role[],
+  options: RoleGuardOptions = {}
 ) {
+  const access = roleAccess(options);
+
   return async function (
     request: FastifyRequest,
     _reply: FastifyReply
@@ -288,7 +436,11 @@ export function requireStoreRole(
     const auth = request.auth;
 
     if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
     }
 
     const storeId =
@@ -297,17 +449,25 @@ export function requireStoreRole(
       ];
 
     if (!storeId) {
-      return await denyAccess(request, {
-        reason: "missing_store_id",
-        storeIdParam,
-      });
+      return await denyAccess(
+        request,
+        {
+          reason: "missing_store_id",
+          storeIdParam,
+        },
+        options.writeDeniedAudit
+      );
     }
 
-    if (!(await activeStoreExists(storeId))) {
-      return await denyAccess(request, {
-        reason: "store_inactive_or_missing",
-        storeId,
-      });
+    if (!(await access.activeStoreExists(storeId))) {
+      return await denyAccess(
+        request,
+        {
+          reason: "store_inactive_or_missing",
+          storeId,
+        },
+        options.writeDeniedAudit
+      );
     }
 
     if (auth.platformRole === "SUPER_ADMIN") {
@@ -317,19 +477,26 @@ export function requireStoreRole(
     const storeRole = auth.storeRoles[storeId];
 
     if (!storeRole || !roles.includes(storeRole)) {
-      await denyAccess(request, {
-        reason: "store_role_not_allowed",
-        storeId,
-        requiredRoles: roles,
-      });
+      await denyAccess(
+        request,
+        {
+          reason: "store_role_not_allowed",
+          storeId,
+          requiredRoles: roles,
+        },
+        options.writeDeniedAudit
+      );
     }
   };
 }
 
 export function requireStoreInOrganization(
   storeIdParam: string,
-  organizationIdParam: string
+  organizationIdParam: string,
+  options: RoleGuardOptions = {}
 ) {
+  const access = roleAccess(options);
+
   return async function (
     request: FastifyRequest,
     _reply: FastifyReply
@@ -337,7 +504,11 @@ export function requireStoreInOrganization(
     const auth = request.auth;
 
     if (!auth) {
-      return await denyAccess(request, { reason: "missing_auth" });
+      return await denyAccess(
+        request,
+        { reason: "missing_auth" },
+        options.writeDeniedAudit
+      );
     }
 
     const params = request.params as Record<string, string | undefined>;
@@ -345,37 +516,31 @@ export function requireStoreInOrganization(
     const organizationId = params[organizationIdParam];
 
     if (!storeId || !organizationId) {
-      return await denyAccess(request, {
-        reason: "missing_store_or_organization_id",
-        storeIdParam,
-        organizationIdParam,
-      });
+      return await denyAccess(
+        request,
+        {
+          reason: "missing_store_or_organization_id",
+          storeIdParam,
+          organizationIdParam,
+        },
+        options.writeDeniedAudit
+      );
     }
 
     if (auth.platformRole === "SUPER_ADMIN") {
       return;
     }
 
-    const store = await prisma.store.findFirst({
-      where: {
-        id: storeId,
-        organizationId,
-        isActive: true,
-        organization: {
-          isActive: true,
+    if (!(await access.storeBelongsToOrganization(storeId, organizationId))) {
+      await denyAccess(
+        request,
+        {
+          reason: "store_not_in_organization",
+          storeId,
+          organizationId,
         },
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    if (!store) {
-      await denyAccess(request, {
-        reason: "store_not_in_organization",
-        storeId,
-        organizationId,
-      });
+        options.writeDeniedAudit
+      );
     }
   };
 }

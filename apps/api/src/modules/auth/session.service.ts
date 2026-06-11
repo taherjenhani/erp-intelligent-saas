@@ -4,7 +4,11 @@ import { env } from "../../config/env";
 import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
 import { createRefreshTokenRecord } from "../../utils/authTokens";
-import { verifyPassword } from "../../utils/hash";
+import {
+  activePasswordPepperKeyId,
+  hashPassword,
+  verifyPassword,
+} from "../../utils/hash";
 import { getTokenHashCandidates } from "../../utils/token";
 import { writeAuthAudit } from "./auth-audit.service";
 import { toPublicUser } from "./auth.mapper";
@@ -19,6 +23,7 @@ import {
   revokeAllActiveUserSessionsAndTokens,
   revokeRefreshTokenFamilyAndSession,
   revokeSessionByRefreshToken,
+  updateUserPasswordHashIfCurrent,
 } from "./auth.repository";
 import {
   assertLoginNotLocked,
@@ -39,6 +44,26 @@ async function revokeTokenFamily(familyId: string, sessionId: string) {
       tx
     )
   );
+}
+
+async function rehashPasswordPepperIfNeeded(input: {
+  userId: string;
+  password: string;
+  currentPasswordHash: string;
+  passwordPepperKeyId?: string | null;
+}) {
+  const activeKeyId = activePasswordPepperKeyId();
+
+  if (input.passwordPepperKeyId === activeKeyId) {
+    return;
+  }
+
+  await updateUserPasswordHashIfCurrent({
+    userId: input.userId,
+    currentPasswordHash: input.currentPasswordHash,
+    password: await hashPassword(input.password),
+    passwordPepperKeyId: activeKeyId,
+  });
 }
 
 function isSameRefreshContext(
@@ -439,6 +464,13 @@ export async function loginUser(
       403
     );
   }
+
+  await rehashPasswordPepperIfNeeded({
+    userId: user.id,
+    password: data.password,
+    currentPasswordHash: user.password,
+    passwordPepperKeyId: user.passwordPepperKeyId,
+  });
 
   const refreshToken = await createRefreshTokenRecord();
   const session = await createSessionWithRefreshToken({

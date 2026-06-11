@@ -39,7 +39,19 @@ const securityPlugin: FastifyPluginAsync = async (app) => {
 
   await app.register(helmet, {
     contentSecurityPolicy: env.HELMET_CSP_ENABLED
-      ? undefined
+      ? {
+          directives: {
+            defaultSrc: ["'self'"],
+            baseUri: ["'self'"],
+            frameAncestors: ["'none'"],
+            objectSrc: ["'none'"],
+            scriptSrc: ["'self'"],
+            styleSrc: ["'self'"],
+            imgSrc: ["'self'", "data:"],
+            connectSrc: ["'self'"],
+            formAction: ["'self'"],
+          },
+        }
       : false,
   });
 

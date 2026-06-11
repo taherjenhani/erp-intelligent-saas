@@ -192,6 +192,27 @@ export async function updatePasswordAndRevokeOtherSessions(
   });
 }
 
+export function updateUserPasswordHashIfCurrent(
+  input: {
+    userId: string;
+    currentPasswordHash: string;
+    password: string;
+    passwordPepperKeyId: string;
+  },
+  client: PrismaClientLike = prisma
+) {
+  return client.user.updateMany({
+    where: {
+      id: input.userId,
+      password: input.currentPasswordHash,
+    },
+    data: {
+      password: input.password,
+      passwordPepperKeyId: input.passwordPepperKeyId,
+    },
+  });
+}
+
 export function createSessionWithRefreshToken(
   input: {
     userId: string;

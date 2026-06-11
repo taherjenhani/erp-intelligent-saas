@@ -234,6 +234,7 @@ const envSchema = z
       .positive()
       .default(60 * 60 * 1000),
     HELMET_CSP_ENABLED: booleanFromEnv.default(false),
+    SERVE_WEB_CONTENT: booleanFromEnv.default(false),
 
     JWT_ACCESS_SECRET: z
       .string()
@@ -345,6 +346,19 @@ const envSchema = z
           path: ["PASSWORD_PEPPER_KEY_ID"],
           message:
             "PASSWORD_PEPPER_KEY_ID must exist in PASSWORD_PEPPER_KEYS",
+        });
+      }
+
+      if (
+        env.PASSWORD_PEPPER_KEYS &&
+        passwordPepperKeyring[env.PASSWORD_PEPPER_KEY_ID] !==
+          env.PASSWORD_PEPPER
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["PASSWORD_PEPPER_KEYS"],
+          message:
+            "PASSWORD_PEPPER_KEYS active secret must match PASSWORD_PEPPER",
         });
       }
     }
@@ -542,6 +556,15 @@ const envSchema = z
         path: ["TOKEN_CLEANUP_WORKER_ENABLED"],
         message:
           "Production must enable TOKEN_CLEANUP_WORKER_ENABLED or set TOKEN_CLEANUP_EXTERNAL_SCHEDULED=true for an external cleanup schedule",
+      });
+    }
+
+    if (env.SERVE_WEB_CONTENT && !env.HELMET_CSP_ENABLED) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["HELMET_CSP_ENABLED"],
+        message:
+          "HELMET_CSP_ENABLED must be true when SERVE_WEB_CONTENT=true",
       });
     }
 
