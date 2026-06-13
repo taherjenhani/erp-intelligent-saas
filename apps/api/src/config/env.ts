@@ -1,17 +1,13 @@
 import "dotenv/config";
 import { z } from "zod";
 
-const DEVELOPMENT_CSRF_SECRET =
-  "development-csrf-secret-change-before-prod";
-const DEVELOPMENT_TOKEN_HASH_SECRET =
-  "development-token-hash-secret-change-before-prod";
-const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY =
-  "development-email-outbox-encryption-key-change-before-prod";
-const DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY_ID = "local-dev";
-const DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET =
-  "development-refresh-idempotency-secret-change-before-prod";
+const DEVELOPMENT_SECRET_MARKERS = new Set([
+  "development-csrf-secret-change-before-prod",
+  "development-token-hash-secret-change-before-prod",
+  "development-email-outbox-encryption-key-change-before-prod",
+  "development-refresh-idempotency-secret-change-before-prod",
+]);
 const DEVELOPMENT_CORS_ORIGIN = "http://localhost:3000";
-const DEVELOPMENT_PASSWORD_PEPPER_KEY_ID = "local-dev";
 const LEGACY_SECRET_FALLBACK_DEADLINE =
   "2026-09-30T00:00:00.000Z";
 const KEY_ID_PATTERN = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -135,11 +131,12 @@ const envSchema = z
 
     CSRF_SECRET: z
       .string()
-      .min(32, "CSRF_SECRET must contain at least 32 characters")
-      .default(DEVELOPMENT_CSRF_SECRET),
+      .min(32, "CSRF_SECRET must contain at least 32 characters"),
 
     LOGIN_RATE_LIMIT_MAX: z.coerce.number().default(5),
-    LOGIN_RATE_LIMIT_WINDOW: z.string().default("1 minute"),
+    LOGIN_RATE_LIMIT_WINDOW: z.string().default("15 minutes"),
+    REFRESH_RATE_LIMIT_MAX: z.coerce.number().default(5),
+    REFRESH_RATE_LIMIT_WINDOW: z.string().default("15 minutes"),
     LOGIN_ATTEMPT_WINDOW_MS: z.coerce
       .number()
       .int()
@@ -160,8 +157,8 @@ const envSchema = z
       .int()
       .min(0)
       .default(5),
-    AUTH_RATE_LIMIT_MAX: z.coerce.number().default(10),
-    AUTH_RATE_LIMIT_WINDOW: z.string().default("10 minutes"),
+    AUTH_RATE_LIMIT_MAX: z.coerce.number().default(5),
+    AUTH_RATE_LIMIT_WINDOW: z.string().default("15 minutes"),
     RATE_LIMIT_REDIS_URL: z.string().url().optional(),
     TRUST_PROXY: booleanFromEnv.default(false),
     REFRESH_TOKEN_REUSE_GRACE_MS: z.coerce
@@ -205,12 +202,10 @@ const envSchema = z
       .min(
         32,
         "EMAIL_OUTBOX_ENCRYPTION_KEY must contain at least 32 characters"
-      )
-      .default(DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY),
+      ),
     EMAIL_OUTBOX_ENCRYPTION_KEY_ID: z
       .string()
-      .regex(KEY_ID_PATTERN, "EMAIL_OUTBOX_ENCRYPTION_KEY_ID is invalid")
-      .default(DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY_ID),
+      .regex(KEY_ID_PATTERN, "EMAIL_OUTBOX_ENCRYPTION_KEY_ID is invalid"),
     EMAIL_OUTBOX_ENCRYPTION_KEYS: z.string().optional(),
     EMAIL_OUTBOX_WORKER_ENABLED: booleanFromEnv.default(false),
     EMAIL_OUTBOX_WORKER_INTERVAL_MS: z.coerce
@@ -236,31 +231,38 @@ const envSchema = z
     HELMET_CSP_ENABLED: booleanFromEnv.default(false),
     SERVE_WEB_CONTENT: booleanFromEnv.default(false),
 
+    JWT_ALGORITHM: z
+      .enum(["HS256", "RS256"])
+      .default("HS256"),
     JWT_ACCESS_SECRET: z
       .string()
-      .min(32, "JWT_ACCESS_SECRET must contain at least 32 characters"),
+      .min(32, "JWT_ACCESS_SECRET must contain at least 32 characters")
+      .optional(),
+    JWT_PRIVATE_KEY: z.string().optional(),
+    JWT_PUBLIC_KEY: z.string().optional(),
+    JWT_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, "JWT_KEY_ID is invalid")
+      .optional(),
     JWT_ISSUER: z.string().min(1).default("erp-api"),
     JWT_AUDIENCE: z.string().min(1).default("erp-app"),
 
+    PASSWORD_PEPPER_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, "PASSWORD_PEPPER_KEY_ID is invalid"),
     PASSWORD_PEPPER: z
       .string()
       .min(32, "PASSWORD_PEPPER must contain at least 32 characters"),
-    PASSWORD_PEPPER_KEY_ID: z
-      .string()
-      .regex(KEY_ID_PATTERN, "PASSWORD_PEPPER_KEY_ID is invalid")
-      .default(DEVELOPMENT_PASSWORD_PEPPER_KEY_ID),
     PASSWORD_PEPPER_KEYS: z.string().optional(),
     TOKEN_HASH_SECRET: z
       .string()
-      .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters")
-      .default(DEVELOPMENT_TOKEN_HASH_SECRET),
+      .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters"),
     REFRESH_IDEMPOTENCY_SECRET: z
       .string()
       .min(
         32,
         "REFRESH_IDEMPOTENCY_SECRET must contain at least 32 characters"
-      )
-      .default(DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET),
+      ),
     LEGACY_SECRET_FALLBACK_UNTIL: z
       .string()
       .refine(
@@ -303,6 +305,89 @@ const envSchema = z
         path: ["REFRESH_IDEMPOTENCY_SECRET"],
         message:
           "REFRESH_IDEMPOTENCY_SECRET must be different from PASSWORD_PEPPER and TOKEN_HASH_SECRET",
+      });
+    }
+
+    if (env.JWT_ALGORITHM === "RS256") {
+      if (!env.JWT_PRIVATE_KEY) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["JWT_PRIVATE_KEY"],
+          message: "JWT_PRIVATE_KEY is required when JWT_ALGORITHM=RS256",
+        });
+      }
+
+      if (!env.JWT_PUBLIC_KEY) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["JWT_PUBLIC_KEY"],
+          message: "JWT_PUBLIC_KEY is required when JWT_ALGORITHM=RS256",
+        });
+      }
+    }
+
+    if (env.JWT_ALGORITHM === "HS256" && !env.JWT_ACCESS_SECRET) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_ACCESS_SECRET"],
+        message: "JWT_ACCESS_SECRET is required when JWT_ALGORITHM=HS256",
+      });
+    }
+
+    if (
+      env.JWT_PRIVATE_KEY && env.JWT_ALGORITHM !== "RS256"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_PRIVATE_KEY"],
+        message:
+          "JWT_PRIVATE_KEY may only be used when JWT_ALGORITHM=RS256",
+      });
+    }
+
+    if (
+      env.JWT_PUBLIC_KEY && env.JWT_ALGORITHM !== "RS256"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_PUBLIC_KEY"],
+        message:
+          "JWT_PUBLIC_KEY may only be used when JWT_ALGORITHM=RS256",
+      });
+    }
+
+    if (
+      env.JWT_ALGORITHM !== "HS256" &&
+      env.JWT_ALGORITHM !== "RS256"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_ALGORITHM"],
+        message: "JWT_ALGORITHM must be HS256 or RS256",
+      });
+    }
+
+    if (
+      DEVELOPMENT_SECRET_MARKERS.has(env.CSRF_SECRET) ||
+      DEVELOPMENT_SECRET_MARKERS.has(env.TOKEN_HASH_SECRET) ||
+      DEVELOPMENT_SECRET_MARKERS.has(env.PASSWORD_PEPPER) ||
+      DEVELOPMENT_SECRET_MARKERS.has(env.EMAIL_OUTBOX_ENCRYPTION_KEY) ||
+      DEVELOPMENT_SECRET_MARKERS.has(env.REFRESH_IDEMPOTENCY_SECRET)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["CSRF_SECRET"],
+        message:
+          "Secrets must not use hard-coded development fallback values",
+      });
+    }
+
+    if (env.NODE_ENV === "production" && !env.COOKIE_DOMAIN) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["COOKIE_DOMAIN"],
+        message:
+          "COOKIE_DOMAIN must be explicit in production when refresh cookies are used",
       });
     }
 
@@ -487,7 +572,7 @@ const envSchema = z
       });
     }
 
-    if (env.CSRF_SECRET === DEVELOPMENT_CSRF_SECRET) {
+    if (DEVELOPMENT_SECRET_MARKERS.has(env.CSRF_SECRET)) {
       ctx.addIssue({
         code: "custom",
         path: ["CSRF_SECRET"],
@@ -495,7 +580,7 @@ const envSchema = z
       });
     }
 
-    if (env.TOKEN_HASH_SECRET === DEVELOPMENT_TOKEN_HASH_SECRET) {
+    if (DEVELOPMENT_SECRET_MARKERS.has(env.TOKEN_HASH_SECRET)) {
       ctx.addIssue({
         code: "custom",
         path: ["TOKEN_HASH_SECRET"],
@@ -503,10 +588,7 @@ const envSchema = z
       });
     }
 
-    if (
-      env.REFRESH_IDEMPOTENCY_SECRET ===
-      DEVELOPMENT_REFRESH_IDEMPOTENCY_SECRET
-    ) {
+    if (DEVELOPMENT_SECRET_MARKERS.has(env.REFRESH_IDEMPOTENCY_SECRET)) {
       ctx.addIssue({
         code: "custom",
         path: ["REFRESH_IDEMPOTENCY_SECRET"],
@@ -515,10 +597,7 @@ const envSchema = z
       });
     }
 
-    if (
-      env.EMAIL_OUTBOX_ENCRYPTION_KEY ===
-      DEVELOPMENT_EMAIL_OUTBOX_ENCRYPTION_KEY
-    ) {
+    if (DEVELOPMENT_SECRET_MARKERS.has(env.EMAIL_OUTBOX_ENCRYPTION_KEY)) {
       ctx.addIssue({
         code: "custom",
         path: ["EMAIL_OUTBOX_ENCRYPTION_KEY"],

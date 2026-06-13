@@ -171,6 +171,7 @@ export async function updatePasswordAndRevokeOtherSessions(
     },
     data: {
       status: "REVOKED",
+      revokedAt: new Date(),
     },
   });
 
@@ -323,6 +324,7 @@ export async function revokeRefreshTokenFamilyAndSession(
     },
     data: {
       status: "REVOKED",
+      revokedAt: new Date(),
     },
   });
 }
@@ -349,6 +351,7 @@ export async function revokeSessionByRefreshToken(
     },
     data: {
       status: "REVOKED",
+      revokedAt: new Date(),
     },
   });
 }
@@ -364,6 +367,7 @@ export async function revokeAllActiveUserSessionsAndTokens(
     },
     data: {
       status: "REVOKED",
+      revokedAt: new Date(),
     },
   });
 

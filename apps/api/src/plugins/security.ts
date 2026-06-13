@@ -13,6 +13,12 @@ const allowedOrigins = env.CORS_ORIGIN.split(",")
   .filter(Boolean);
 
 const securityPlugin: FastifyPluginAsync = async (app) => {
+  if (env.NODE_ENV === "production" && !env.RATE_LIMIT_REDIS_URL) {
+    throw new Error(
+      "RATE_LIMIT_REDIS_URL is required in production for shared rate limiting"
+    );
+  }
+
   const redis = env.RATE_LIMIT_REDIS_URL
     ? new Redis(env.RATE_LIMIT_REDIS_URL, {
         keyPrefix: "erp-api:rate-limit:",

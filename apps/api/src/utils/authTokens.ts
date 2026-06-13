@@ -66,6 +66,9 @@ export function signAccessToken(
     {
       sub: user.id,
       expiresIn: "15m",
+      header: env.JWT_KEY_ID
+        ? { alg: env.JWT_ALGORITHM, kid: env.JWT_KEY_ID }
+        : undefined,
     }
   );
 }

@@ -1,14 +1,21 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import "../test/setup-env";
 
 import { parseEnv } from "./env";
 
 const requiredEnv = {
   DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/test",
   JWT_ACCESS_SECRET: "test_access_secret_minimum_32_characters",
+  JWT_ISSUER: "erp-api",
+  JWT_AUDIENCE: "erp-app",
+  PASSWORD_PEPPER_KEY_ID: "pepper-2026-06",
   PASSWORD_PEPPER: "test_password_pepper_minimum_32_chars",
-  TOKEN_HASH_SECRET: "test_token_hash_secret_minimum_32_chars",
+  TOKEN_HASH_SECRET: "test_token_hash_secret_minimum_32_characters",
+  REFRESH_IDEMPOTENCY_SECRET: "test_refresh_idempotency_secret_minimum_32_chars",
   CSRF_SECRET: "test_csrf_secret_minimum_32_characters",
+  EMAIL_OUTBOX_ENCRYPTION_KEY_ID: "email-outbox-key-2026-06",
+  EMAIL_OUTBOX_ENCRYPTION_KEY: "test_email_outbox_encryption_key_minimum_32_chars",
 };
 
 test("parseEnv parses boolean strings explicitly", () => {
@@ -27,6 +34,30 @@ test("parseEnv parses boolean strings explicitly", () => {
       EXPOSE_AUTH_TOKENS: "true",
     }).EXPOSE_AUTH_TOKENS,
     true
+  );
+});
+
+test("parseEnv accepts RS256 when key pair is configured", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    JWT_ALGORITHM: "RS256",
+    JWT_PRIVATE_KEY: "test_private_key_minimum_value",
+    JWT_PUBLIC_KEY: "test_public_key_minimum_value",
+    JWT_KEY_ID: "jwt-key-2026-06",
+  });
+
+  assert.equal(parsed.JWT_ALGORITHM, "RS256");
+  assert.equal(parsed.JWT_KEY_ID, "jwt-key-2026-06");
+});
+
+test("parseEnv rejects asymmetric keys when HS256 is configured", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      JWT_ALGORITHM: "HS256",
+      JWT_PRIVATE_KEY: "test_private_key_minimum_value",
+      JWT_PUBLIC_KEY: "test_public_key_minimum_value",
+    })
   );
 });
 
@@ -80,6 +111,7 @@ test("parseEnv rejects local CORS origins in production", () => {
       NODE_ENV: "production",
       APP_URL: "https://app.example.com",
       CORS_ORIGIN: "http://localhost:3000",
+      COOKIE_DOMAIN: "example.com",
       SMTP_HOST: "smtp.example.com",
       RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
       EMAIL_OUTBOX_ENCRYPTION_KEY:
@@ -97,6 +129,7 @@ test("parseEnv requires explicit email outbox encryption key in production", () 
       NODE_ENV: "production",
       APP_URL: "https://app.example.com",
       CORS_ORIGIN: "https://app.example.com",
+      COOKIE_DOMAIN: "example.com",
       SMTP_HOST: "smtp.example.com",
       RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
       CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
@@ -221,6 +254,7 @@ test("parseEnv allows production HTTP email provider without SMTP best-effort", 
     NODE_ENV: "production",
     APP_URL: "https://app.example.com",
     CORS_ORIGIN: "https://app.example.com",
+    COOKIE_DOMAIN: "example.com",
     EMAIL_PROVIDER: "http",
     EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
     EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",
@@ -244,6 +278,7 @@ test("parseEnv requires production token cleanup schedule", () => {
       NODE_ENV: "production",
       APP_URL: "https://app.example.com",
       CORS_ORIGIN: "https://app.example.com",
+      COOKIE_DOMAIN: "example.com",
       EMAIL_PROVIDER: "http",
       EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
       EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",
@@ -265,6 +300,7 @@ test("parseEnv requires CSP when serving web content in production", () => {
       NODE_ENV: "production",
       APP_URL: "https://app.example.com",
       CORS_ORIGIN: "https://app.example.com",
+      COOKIE_DOMAIN: "example.com",
       EMAIL_PROVIDER: "http",
       EMAIL_HTTP_API_URL: "https://email-provider.example.com/send",
       EMAIL_HTTP_API_KEY: "email_provider_api_key_minimum_16",

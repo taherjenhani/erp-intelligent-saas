@@ -312,7 +312,7 @@ npx prisma db seed
 ## Token Model
 
 - Access tokens are JWTs with a short lifetime.
-- JWT signing and verification explicitly restrict the algorithm to `HS256`.
+- JWT signing and verification explicitly restrict the configured algorithm. `HS256` is the default; `RS256` can be enabled with `JWT_ALGORITHM=RS256`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, and optional `JWT_KEY_ID` for the token header.
 - Access tokens include `iss`, `aud`, and `jti`; protected routes verify those claims and reload session/user state from PostgreSQL.
 - Refresh tokens are opaque random tokens stored as HMAC hashes.
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.

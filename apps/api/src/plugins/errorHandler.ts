@@ -4,6 +4,18 @@ import { ZodError } from "zod";
 
 import { AppError } from "../lib/errors";
 
+function serializeError(error: unknown) {
+  if (error instanceof Error) {
+    return {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    };
+  }
+
+  return { message: String(error) };
+}
+
 const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof ZodError) {
@@ -39,7 +51,13 @@ const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
       });
     }
 
-    app.log.error(error);
+    app.log.error(
+      {
+        correlationId: request.correlationId,
+        error: serializeError(error),
+      },
+      "Unhandled error"
+    );
 
     return reply.status(500).send({
       success: false,

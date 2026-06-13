@@ -1,6 +1,6 @@
 # Audit actuel du module AUTH
 
-Date: 2026-06-11
+Date: 2026-06-13
 Portee: `apps/api` Fastify + TypeScript + Prisma/PostgreSQL.
 
 Ce rapport analyse le code reel du workspace au moment de l'audit. Les references de lignes sont celles de cette version.
@@ -11,14 +11,14 @@ Niveau actuel: avance, proche production pour l'auth principale.
 
 Scores:
 
-- Securite: 8.4/10
-- Architecture: 8/10
-- Maintenabilite: 8/10
-- Production readiness: 7.6/10
+- Securite: 8.6/10
+- Architecture: 8.1/10
+- Maintenabilite: 8.1/10
+- Production readiness: 7.8/10
 
 Resume strict:
 
-- Les anciens points critiques ont largement ete traites: CSRF, JWT claims, secret separation, refresh idempotent, outbox email chiffree, login lock, RBAC tenant, CI PostgreSQL, seed PrismaPg, migrations de hardening.
+- Les anciens points critiques ont largement ete traites: CSRF, JWT claims, secret separation, refresh idempotent, outbox email chiffree, login lock, RBAC tenant, CI PostgreSQL, seed PrismaPg, migrations de hardening, session `revokedAt`, et option de signature JWT asymetrique RS256.
 - Les risques restants ne sont plus principalement des bugs de code auth simples. Ils sont surtout operationnels: sequence de migration tenant sur DB existante, provider email reel avec idempotency garantie, observabilite multi-instance, execution obligatoire des tests DB, et politique complete avant exposition MFA/API keys.
 - Aucun endpoint MFA/API key ne doit etre expose avant policy complete: rotation, revocation, recovery, audit, rate-limit et UX securite.
 
@@ -46,6 +46,8 @@ Resume strict:
 | P18 | `src/utils/token.ts:40-42` | Legacy token hash | Moyenne | Secrets | Fallback legacy vers `PASSWORD_PEPPER` tant que deadline active. | Blast radius prolonge jusqu'a retrait. | Planifier suppression apres `LEGACY_SECRET_FALLBACK_UNTIL`. | P2 |
 | P19 | `src/plugins/metrics.ts` + `monitoring/prometheus-alerts.yml` | Alerting | Moyenne | Production | Alertes existent pour audit/security/SENT_UNKNOWN, mais pas deployees par code. | Aucun signal si Prometheus rules non chargees. | Ajouter runbook verification des rules en staging/prod. | P2 |
 | P20 | Dependances | `npm audit` | Moyenne | Supply chain | Advisories moderees Prisma/Hono signalees precedemment sans fix upstream. | Risque upstream selon chemin exploitable. | Dependabot actif, `audit:ci` high/critical, revue hebdo advisories. | P2 |
+| P21 | `src/config/env.ts:234-366` + `src/plugins/jwt.ts:7-32` | JWT algorithm | Moyenne | Securite | RS256 est supporte, mais la rotation multi-cle reste basique via un seul `JWT_KEY_ID`. | Rotation zero-downtime limitee si plusieurs cles publiques doivent etre acceptees simultanement. | Ajouter un JWKS/keyring public pour verification multi-kid avant rotation enterprise. | P2 |
+| P22 | `prisma/migrations/20260613120000_session_revoked_at/migration.sql` | Session audit | Faible | DB | `Session.revokedAt` est ajoute pour audit, mais pas encore exploite dans cleanup analytique. | Les sessions revoquees peuvent rester sans politique de retention fine. | Ajouter retention/reporting par `revokedAt` dans le job cleanup ou BI securite. | P3 |
 
 ## C. Analyse fichier par fichier
 
@@ -56,7 +58,7 @@ Role: expose les endpoints auth.
 Points corrects:
 
 - CSRF applique sur register, verify, resend, forgot, reset, login, refresh, logout, logout-all, change-password (`auth.route.ts:38-128`).
-- Rate-limit specifique login et rate-limit general auth (`auth.route.ts:31-35`, `79-103`).
+- Rate-limit specifique login, refresh et auth generique (`auth.route.ts:31-35`, `79-103`).
 - `logout` accepte le refresh cookie sans `requireAuth`, ce qui permet de sortir meme avec access token expire (`auth.route.ts:105-110`).
 
 Risques restants:
@@ -301,15 +303,16 @@ Role: plugin cookie + JWT.
 
 Points corrects:
 
-- HS256 explicitement signe et verifie (`jwt.ts:9-16`).
+- HS256 reste le mode par defaut avec algorithme explicitement signe/verifie.
+- RS256 est maintenant supporte via `JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`, avec `JWT_KEY_ID` optionnel dans le header.
 
 Risques restants:
 
-- HS256 impose gestion stricte d'un secret symetrique. Pour separation service-to-service, envisager RS256/EdDSA.
+- La rotation enterprise multi-cle n'est pas complete: il manque un JWKS/keyring permettant de verifier plusieurs `kid` pendant une rotation.
 
 Correction:
 
-- Garder HS256 pour monolithe; migrer a cle asymetrique si plusieurs services valident les tokens.
+- Garder HS256 pour monolithe simple; utiliser RS256 si plusieurs services valident les tokens, puis ajouter un JWKS interne avant rotation zero-downtime.
 
 ### `prisma/schema.prisma`
 
@@ -318,6 +321,7 @@ Role: modele de donnees.
 Points corrects:
 
 - `Session`, `RefreshToken`, `RefreshRotation`, `AuthToken`, `LoginLock`, `PasswordHistory`, `AuditLog`, `SecurityEvent`, `EmailOutbox`.
+- `Session.revokedAt` permet de dater la revocation pour audit et incident response.
 - `Store.organizationId` NOT NULL dans schema (`schema.prisma:160-178`).
 - `ApiKey` et `MfaFactor` fondations presentes (`schema.prisma:421-473`).
 
@@ -466,6 +470,7 @@ Securite:
 1. Rendre `Idempotency-Key` obligatoire dans le client refresh.
 2. Garder MFA/API key non exposes jusqu'a policy complete.
 3. Supprimer fallback legacy secrets apres deadline.
+4. Pour RS256 enterprise, ajouter keyring/JWKS de verification multi-cles.
 
 Architecture:
 
@@ -512,6 +517,7 @@ Production readiness:
 18. Provider email sandbox tests.
 19. Runbook rotation pepper/email/idempotency secrets.
 20. Revue hebdo npm advisories Prisma/Fastify/Hono.
+21. Ajouter retention/reporting securite base sur `Session.revokedAt`.
 
 ## J. Version ideale attendue
 

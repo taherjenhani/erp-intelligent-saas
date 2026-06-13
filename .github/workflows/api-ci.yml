@@ -35,6 +35,7 @@ jobs:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/erp_saas_test
       SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/erp_saas_shadow
       JWT_ACCESS_SECRET: test_access_secret_minimum_32_characters
+      PASSWORD_PEPPER_KEY_ID: ci-pepper
       PASSWORD_PEPPER: test_password_pepper_minimum_32_chars
       TOKEN_HASH_SECRET: test_token_hash_secret_minimum_32_chars
       REFRESH_IDEMPOTENCY_SECRET: test_refresh_idempotency_secret_minimum_32_chars

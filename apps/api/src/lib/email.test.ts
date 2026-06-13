@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import "../test/setup-env";
 
 import {
   decryptEmailMessageFromStorage,
@@ -22,7 +23,7 @@ test("email outbox encrypts sensitive body fields at rest", () => {
 
   assert.match(encrypted.text, /^enc:v1:[A-Za-z0-9._:-]+:/);
   assert.match(encrypted.html, /^enc:v1:[A-Za-z0-9._:-]+:/);
-  assert.equal(encrypted.encryptionKeyId, "local-dev");
+  assert.equal(encrypted.encryptionKeyId, "test-email-key");
   assert.equal(encrypted.to, message.to);
   assert.equal(encrypted.subject, message.subject);
   assert.equal(encrypted.messageId, message.messageId);

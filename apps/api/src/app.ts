@@ -13,7 +13,21 @@ import tokenCleanupWorkerPlugin from "./plugins/tokenCleanupWorker";
 
 export function buildApp() {
   const app = Fastify({
-    logger: true,
+    logger: {
+      level: env.NODE_ENV === "production" ? "info" : "debug",
+      redact: {
+        paths: [
+          "req.headers.authorization",
+          "req.headers.cookie",
+          "req.headers['set-cookie']",
+          "req.body.password",
+          "req.body.newPassword",
+          "req.body.confirmPassword",
+          "req.body.token",
+          "req.body.refreshToken",
+        ],
+      },
+    },
     requestIdHeader: false,
     genReqId: () => crypto.randomUUID(),
     trustProxy: env.TRUST_PROXY,

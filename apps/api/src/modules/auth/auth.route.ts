@@ -93,8 +93,8 @@ export async function authRoutes(app: FastifyInstance) {
     "/refresh",
     {
       preHandler: app.rateLimit({
-        max: env.AUTH_RATE_LIMIT_MAX,
-        timeWindow: env.AUTH_RATE_LIMIT_WINDOW,
+        max: env.REFRESH_RATE_LIMIT_MAX,
+        timeWindow: env.REFRESH_RATE_LIMIT_WINDOW,
         keyGenerator: (request) => request.ip,
       }),
       preValidation: csrf,
