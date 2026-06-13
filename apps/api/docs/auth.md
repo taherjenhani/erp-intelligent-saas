@@ -2,7 +2,7 @@
 
 ## Production Checklist
 
-- Configure `DATABASE_URL`, `JWT_ACCESS_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `EMAIL_OUTBOX_ENCRYPTION_KEY`, `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, `CSRF_SECRET`, `APP_URL`, `CORS_ORIGIN`, `RATE_LIMIT_REDIS_URL`, `METRICS_TOKEN` when metrics are enabled, and email provider variables.
+- Configure `DATABASE_URL`, `JWT_ACCESS_SECRET` for HS256 or `JWT_ALGORITHM=RS256` with `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEYS` and `JWT_KEY_ID`, `JWT_ISSUER`, `JWT_AUDIENCE`, `PASSWORD_PEPPER`, `TOKEN_HASH_SECRET`, `EMAIL_OUTBOX_ENCRYPTION_KEY`, `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, `CSRF_SECRET`, `APP_URL`, `CORS_ORIGIN`, `RATE_LIMIT_REDIS_URL`, `METRICS_TOKEN` when metrics are enabled, and email provider variables.
 - Keep `PASSWORD_PEPPER` and `TOKEN_HASH_SECRET` different. Password hashes and opaque token hashes must not share the same secret.
 - Keep `REFRESH_IDEMPOTENCY_SECRET` different from password/token secrets. It encrypts short-lived refresh replay responses.
 - Production startup fails if `CSRF_SECRET`, `TOKEN_HASH_SECRET`, or `EMAIL_OUTBOX_ENCRYPTION_KEY` still uses a development default, `RATE_LIMIT_REDIS_URL` is missing, `APP_URL`/`CORS_ORIGIN` points to a local address, SMTP best-effort mode is not explicitly allowed, or `EXPOSE_AUTH_TOKENS=true` outside the allowed local/test contexts.
@@ -15,6 +15,8 @@
 - Keep `EXPOSE_AUTH_TOKENS=false` outside automated tests and strict localhost development.
 - Set `TRUST_PROXY=true` only when the API is behind a trusted reverse proxy or load balancer.
 - Security headers are enabled through Helmet. Every response includes `x-request-id` and `x-correlation-id`.
+- Keep `API_KEY_ENDPOINTS_ENABLED=false` and `MFA_ENDPOINTS_ENABLED=false` until rotation, recovery, audit, rate-limit and UX policies are fully approved.
+- If operational webhook export is enabled, configure `OPERATIONAL_EVENTS_WEBHOOK_URL`, `OPERATIONAL_EVENTS_WEBHOOK_TOKEN`, `OTEL_SERVICE_NAME`, `OTEL_DEPLOYMENT_ENVIRONMENT`, and `OTEL_RESOURCE_ATTRIBUTES`.
 
 ## Prisma Migration Baseline
 
@@ -90,16 +92,14 @@ Register, resend verification, and forgot-password create the auth token and out
 Outbox workers claim messages atomically with `PROCESSING`, `lockedAt`, and `lockedBy` before delivery to avoid duplicate sends when multiple workers run. Stale locks are recovered after `EMAIL_OUTBOX_LOCK_TIMEOUT_MS`.
 While provider delivery is running, the worker refreshes `lockedAt` every `EMAIL_OUTBOX_LOCK_HEARTBEAT_MS` so a slow provider call is not recovered as stale by another worker. `EMAIL_PROVIDER_TIMEOUT_MS` must stay below `EMAIL_OUTBOX_LOCK_TIMEOUT_MS`.
 Email `text` and `html` bodies are encrypted at rest with the active `EMAIL_OUTBOX_ENCRYPTION_KEY_ID`, then scrubbed after successful delivery. New encrypted values use the `enc:v1:<keyId>:<payload>` prefix. Existing legacy `enc:v1:<payload>` rows can be migrated with the maintenance job below.
-Every queued email stores a stable `messageId` and `idempotencyKey`. `EMAIL_PROVIDER=http` sends `EmailOutbox.idempotencyKey` as the configured idempotency header to a provider API. SMTP delivery only uses `messageId` as the `Message-ID` header, which is best-effort deduplication; production requires `EMAIL_ALLOW_SMTP_BEST_EFFORT=true` if SMTP is intentionally used. If provider delivery succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
+Every queued email stores a stable `messageId` and `idempotencyKey`. `EMAIL_PROVIDER=resend` sends `EmailOutbox.idempotencyKey` as Resend's `Idempotency-Key` header. Resend documents idempotency for `POST /emails` and `POST /emails/batch` over a 24-hour window: https://resend.com/docs/dashboard/emails/idempotency-keys. `EMAIL_PROVIDER=http` sends the same key through the configured idempotency header to another provider API. SMTP delivery only uses `messageId` as the `Message-ID` header, which is best-effort deduplication; production requires `EMAIL_ALLOW_SMTP_BEST_EFFORT=true` if SMTP is intentionally used. If provider delivery succeeds but the database update to `SENT` fails, the row is moved to `SENT_UNKNOWN` when possible and must be reviewed before retrying.
 
 Required production variables:
 
 ```env
 APP_URL=https://your-frontend.example.com
-EMAIL_PROVIDER=http
-EMAIL_HTTP_API_URL=https://email-provider.example.com/send
-EMAIL_HTTP_API_KEY=provider-api-key
-EMAIL_HTTP_IDEMPOTENCY_HEADER=Idempotency-Key
+EMAIL_PROVIDER=resend
+RESEND_API_KEY=re_replace_with_provider_key
 EMAIL_PROVIDER_TIMEOUT_MS=30000
 SMTP_FROM=noreply@example.com
 EMAIL_OUTBOX_BATCH_SIZE=20
@@ -110,6 +110,15 @@ EMAIL_OUTBOX_ENCRYPTION_KEY=replace-with-at-least-32-characters
 EMAIL_OUTBOX_ENCRYPTION_KEYS={"key-2026-06":"replace-with-at-least-32-characters","key-2026-01":"previous-key-at-least-32-characters"}
 EMAIL_OUTBOX_WORKER_ENABLED=true
 EMAIL_OUTBOX_WORKER_INTERVAL_MS=60000
+```
+
+Generic HTTP providers are still supported when they provide a real idempotency key:
+
+```env
+EMAIL_PROVIDER=http
+EMAIL_HTTP_API_URL=https://email-provider.example.com/send
+EMAIL_HTTP_API_KEY=provider-api-key
+EMAIL_HTTP_IDEMPOTENCY_HEADER=Idempotency-Key
 ```
 
 SMTP remains available for simple deployments:
@@ -150,6 +159,14 @@ To rotate pending outbox bodies to the active key:
 ```powershell
 npm run email:outbox:rotate-key
 ```
+
+To inspect messages where provider delivery probably succeeded but the final database update failed:
+
+```powershell
+npm run email:outbox:sent-unknown
+```
+
+Treat this output as an operational dashboard seed. Do not blindly retry a `SENT_UNKNOWN` row; verify the provider message id, recipient, subject and audit trail first.
 
 If `EMAIL_OUTBOX_WORKER_ENABLED=true`, the API process also runs a supervised inline worker. Keep only one strategy active per deployment topology: inline worker for simple deployments, external scheduled worker for separated workloads.
 
@@ -219,8 +236,19 @@ Current metrics include:
 - `erp_email_outbox_processed_total`
 - `erp_security_event_total`
 
-Alert on `erp_email_outbox_delivery_total{status="sent_unknown"}`. It means SMTP reported success but the API could not persist the final `SENT` state; retrying those rows manually can send duplicates.
+Alert on `erp_email_outbox_delivery_total{status="sent_unknown"}`. It means the email provider reported success but the API could not persist the final `SENT` state; retrying those rows manually can send duplicates.
 The Prometheus rule is provided in `apps/api/monitoring/prometheus-alerts.yml`.
+
+Operational failures can also be exported as structured webhook events for an internal SIEM/alert bridge:
+
+```env
+OPERATIONAL_EVENTS_WEBHOOK_URL=https://siem.example.com/events
+OPERATIONAL_EVENTS_WEBHOOK_TOKEN=replace-with-at-least-16-characters
+OPERATIONAL_EVENTS_TIMEOUT_MS=5000
+OTEL_SERVICE_NAME=erp-api
+OTEL_DEPLOYMENT_ENVIRONMENT=production
+OTEL_RESOURCE_ATTRIBUTES=service.namespace=erp,team=backend
+```
 
 In multi-instance deployments these metrics are process-local. Set a stable `METRICS_INSTANCE_ID` per instance, scrape every API instance, or export them to Prometheus/OpenTelemetry through the platform collector. When metrics are enabled, all emitted samples include the configured `instance` and `node_env` default labels. Do not use one instance's `/metrics` endpoint as a global source of truth.
 
@@ -232,13 +260,21 @@ Unit and smoke tests:
 npm test
 ```
 
-Supply-chain gate used by CI:
+Supply-chain gate used by CI for production/runtime dependencies:
 
 ```powershell
 npm run audit:ci
 ```
 
-`audit:ci` currently blocks high and critical vulnerabilities. `npm audit --audit-level=moderate` still reports Prisma/Hono advisories without an upstream fix; track them through Dependabot and upgrade Prisma/Hono when patched versions are available.
+`audit:ci` runs `npm audit --omit=dev --audit-level=high`, so high/critical runtime vulnerabilities block CI while dev tooling advisories are tracked separately.
+
+Full dependency visibility, including dev tools:
+
+```powershell
+npm run audit:full
+```
+
+`audit:full` currently reports Prisma/Hono moderate advisories and `tsx`/`esbuild` high advisories without an upstream fix. Track them through Dependabot and upgrade Prisma/Hono/tsx/esbuild when patched versions are available.
 Dependabot is configured in `.github/dependabot.yml` for `/apps/api`, grouped for Prisma and API security dependencies.
 
 Pre-deploy auth gate for a target database after any required tenant backfill:
@@ -312,7 +348,8 @@ npx prisma db seed
 ## Token Model
 
 - Access tokens are JWTs with a short lifetime.
-- JWT signing and verification explicitly restrict the configured algorithm. `HS256` is the default; `RS256` can be enabled with `JWT_ALGORITHM=RS256`, `JWT_PRIVATE_KEY`, `JWT_PUBLIC_KEY`, and optional `JWT_KEY_ID` for the token header.
+- JWT signing and verification explicitly restrict the configured algorithm. `HS256` is the default; `RS256` can be enabled with `JWT_ALGORITHM=RS256`, `JWT_PRIVATE_KEY`, `JWT_KEY_ID`, and either `JWT_PUBLIC_KEY` or `JWT_PUBLIC_KEYS`.
+- For zero-downtime RS256 rotation, publish the active and previous public keys in `JWT_PUBLIC_KEYS` and expose `GET /.well-known/jwks.json` to internal token validators. The active signing `kid` must stay in the keyring until all older access tokens have expired.
 - Access tokens include `iss`, `aud`, and `jti`; protected routes verify those claims and reload session/user state from PostgreSQL.
 - Refresh tokens are opaque random tokens stored as HMAC hashes.
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.
@@ -350,7 +387,7 @@ The schema includes foundational enterprise tables that are intentionally not ex
 - `ApiKey`: hashed API key storage for future machine-to-machine integrations. Exactly one owner is allowed by database constraint, either user or organization.
 - `MfaFactor` and `MfaChallenge`: MFA enrollment/challenge foundation for TOTP, WebAuthn and recovery-code flows. TOTP secrets must be stored encrypted in `encryptedSecret` with `encryptionKeyId`; do not store recoverable MFA secrets as hashes.
 
-Do not enable API key or MFA endpoints until scopes, enrollment policy, recovery policy, lockout behavior and audit requirements are defined.
+Do not enable API key or MFA endpoints until scopes, enrollment policy, recovery policy, lockout behavior and audit requirements are defined. Startup rejects `API_KEY_ENDPOINTS_ENABLED=true` or `MFA_ENDPOINTS_ENABLED=true` unless `AUTH_ENTERPRISE_FEATURES_POLICY_ACK=rotation-recovery-audit-rate-limit-approved` is explicitly set.
 
 ## CORS
 

@@ -11,15 +11,15 @@ Niveau actuel: avance, proche production pour l'auth principale.
 
 Scores:
 
-- Securite: 8.6/10
-- Architecture: 8.1/10
-- Maintenabilite: 8.1/10
-- Production readiness: 7.8/10
+- Securite: 8.8/10
+- Architecture: 8.2/10
+- Maintenabilite: 8.2/10
+- Production readiness: 8.1/10
 
 Resume strict:
 
-- Les anciens points critiques ont largement ete traites: CSRF, JWT claims, secret separation, refresh idempotent, outbox email chiffree, login lock, RBAC tenant, CI PostgreSQL, seed PrismaPg, migrations de hardening, session `revokedAt`, et option de signature JWT asymetrique RS256.
-- Les risques restants ne sont plus principalement des bugs de code auth simples. Ils sont surtout operationnels: sequence de migration tenant sur DB existante, provider email reel avec idempotency garantie, observabilite multi-instance, execution obligatoire des tests DB, et politique complete avant exposition MFA/API keys.
+- Les anciens points critiques ont largement ete traites: CSRF, JWT claims, secret separation, refresh idempotent, outbox email chiffree, login lock, RBAC tenant, CI PostgreSQL, seed PrismaPg, migrations de hardening, session `revokedAt`, signature JWT asymetrique RS256, keyring/JWKS multi-kid, provider Resend avec idempotency key, gates MFA/API key, et webhook operationnel.
+- Les risques restants ne sont plus principalement des bugs de code auth simples. Ils sont surtout operationnels: sequence de migration tenant sur DB existante, enforcement GitHub branch protection, observabilite multi-instance avancee, execution obligatoire des tests DB, et politique complete avant exposition MFA/API keys.
 - Aucun endpoint MFA/API key ne doit etre expose avant policy complete: rotation, revocation, recovery, audit, rate-limit et UX securite.
 
 ## B. Tableau complet des problemes
@@ -28,13 +28,13 @@ Resume strict:
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | P1 | `prisma/migrations/20260610120000_auth_production_hardening/migration.sql:1-10` | Tenant hardening | Haute | DB | Migration bloque si `Store.organizationId` contient encore NULL. | Deploy production casse si DB existante non backfillee. | Executer migration nullable, `tenant:backfill-stores`, puis `tenant:preflight` avant `migrate deploy`. | P0 |
 | P2 | `src/jobs/preflightTenantMigration.ts:47-62` | Preflight | Haute | Production | Le preflight explique la procedure, mais ne peut pas appliquer automatiquement la migration nullable. | Risque humain de mauvaise sequence de release. | Ajouter runbook release obligatoire + dry-run CI/staging sur dump anonymise. | P0 |
-| P3 | `src/lib/email.ts:274-337` | Provider HTTP | Haute | Fiabilite | Adapter HTTP generique, pas encore mappe a un provider reel. | Idempotency peut etre mal interpretee par SendGrid/Postmark/Mailgun/etc. | Creer adapter provider-specifique avec tests sandbox et status mapping. | P1 |
-| P4 | `src/config/env.ts:539-547` | SMTP | Haute | Fiabilite | SMTP reste volontairement best-effort si `EMAIL_ALLOW_SMTP_BEST_EFFORT=true`. | Duplicats possibles apres panne partielle DB apres acceptation SMTP. | Preferer `EMAIL_PROVIDER=http` avec vraie cle idempotency provider. | P1 |
-| P5 | `src/lib/email.ts:477-503` | `SENT_UNKNOWN` | Haute | Operabilite | Etat robuste present, mais remediation reste manuelle/runbook. | Un operateur peut relancer et envoyer un doublon. | Ajouter commande/dashboard de reconciliation SENT_UNKNOWN avec decision explicite. | P1 |
+| P3 | `src/lib/email.ts:324-379` | Provider Resend | Moyenne | Fiabilite | Adapter Resend mappe a un provider reel avec `Idempotency-Key`, mais pas encore teste contre sandbox/provider live en CI. | Mauvais mapping provider non detecte avant staging si l'API externe change. | Ajouter tests contractuels sandbox Resend ou mock officiel; garder `EMAIL_PROVIDER=http` pour autres providers avec idempotency explicite. | P2 |
+| P4 | `src/config/env.ts:761-777` | SMTP | Haute | Fiabilite | SMTP reste volontairement best-effort si `EMAIL_ALLOW_SMTP_BEST_EFFORT=true`. | Duplicats possibles apres panne partielle DB apres acceptation SMTP. | Preferer `EMAIL_PROVIDER=resend` ou `EMAIL_PROVIDER=http` avec vraie cle idempotency provider. | P1 |
+| P5 | `src/lib/email.ts:664-685` | `SENT_UNKNOWN` | Moyenne | Operabilite | Commande de revue presente, mais dashboard humain/alerte externe reste a deployer. | Un operateur peut relancer et envoyer un doublon sans procedure. | Brancher `npm run email:outbox:sent-unknown` dans runbook/dashboard et verifier provider avant retry. | P2 |
 | P6 | `src/lib/metrics.ts:13-19` | Metrics | Moyenne | Observabilite | Metrics en memoire par process. | Vue fragmentee en multi-instance. | Scraper chaque instance ou exporter OTel/Prometheus collector. | P2 |
-| P7 | `src/lib/operationalErrors.ts:29-41` | Logging | Moyenne | Observabilite | `reportOperationalError` ecrit JSON sur `console.error`, pas encore branche a logger app/SIEM. | Alerting dependant de la collecte stdout. | Integrer Pino logger, OTel events ou transport SIEM. | P2 |
+| P7 | `src/lib/operationalErrors.ts:59-140` | Logging/export | Moyenne | Observabilite | `reportOperationalError` ecrit JSON et peut exporter vers webhook, mais ce n'est pas encore un export OTel natif. | Correlation SIEM depend du bridge configure. | Deployer `OPERATIONAL_EVENTS_WEBHOOK_URL` ou remplacer par SDK OTel collector en production avancee. | P2 |
 | P8 | `src/modules/auth/auth.integration.test.ts:43-45` | Tests DB | Haute | Test | Les tests DB se skipent localement sans `RUN_DB_TESTS=true`. | Regression transactionnelle invisible en local. | Garder CI obligatoire et ajouter script dev `test:integration:db` documente. | P1 |
-| P9 | `.github/workflows/api-ci.yml:57-69` | CI | Moyenne | Production | Workflow est complet, mais son execution depend de GitHub/branche protegee. | Si CI non activee/protegee, les garanties ne bloquent pas le merge. | Proteger `main/develop`, required checks, status checks obligatoires. | P1 |
+| P9 | `.github/workflows/api-ci.yml:57-69` + `.github/branch-protection-develop.json` | CI | Moyenne | Production | Workflow et configuration de protection existent, mais l'application de la branch protection depend des droits admin GitHub. | Si la protection n'est pas activee, les garanties ne bloquent pas le merge. | Appliquer la protection `develop/main` avec required check `api` puis verifier sur GitHub. | P1 |
 | P10 | `src/modules/auth/session.service.ts:87-215` | Refresh idempotency | Moyenne | Securite | Reponse refresh stockee chiffree temporairement pour retry idempotent. | Si DB + secret compromis pendant TTL, refresh replay possible. | TTL court conserve, cleanup obligatoire, secret via KMS a terme. | P2 |
 | P11 | `src/modules/auth/session.service.ts:262-363` | Grace refresh | Moyenne | Securite/UX | Apres grace consommee, meme contexte retourne 409, pas toujours replay si pas d'idempotency key. | Client sans idempotency key doit gerer retry proprement. | Rendre l'idempotency key obligatoire cote frontend pour `/refresh`. | P2 |
 | P12 | `src/modules/auth/password.service.ts:96-123` | Reset password | Moyenne | Performance | Nouveau password hashe avant validation du token, puis compare a l'historique. | DoS CPU possible sur reset si rate limit contourne. | Verifier token avant hash lourd, ou maintenir rate-limit strict + cout bcrypt mesure. | P2 |
@@ -45,8 +45,8 @@ Resume strict:
 | P17 | `src/plugins/security.ts:16-33` | Redis rate-limit | Moyenne | Production | Fail-closed au startup si Redis indisponible. | API refuse de demarrer en prod si Redis down. | C'est sur; documenter SLA Redis ou ajouter fallback explicite par env. | P2 |
 | P18 | `src/utils/token.ts:40-42` | Legacy token hash | Moyenne | Secrets | Fallback legacy vers `PASSWORD_PEPPER` tant que deadline active. | Blast radius prolonge jusqu'a retrait. | Planifier suppression apres `LEGACY_SECRET_FALLBACK_UNTIL`. | P2 |
 | P19 | `src/plugins/metrics.ts` + `monitoring/prometheus-alerts.yml` | Alerting | Moyenne | Production | Alertes existent pour audit/security/SENT_UNKNOWN, mais pas deployees par code. | Aucun signal si Prometheus rules non chargees. | Ajouter runbook verification des rules en staging/prod. | P2 |
-| P20 | Dependances | `npm audit` | Moyenne | Supply chain | Advisories moderees Prisma/Hono signalees precedemment sans fix upstream. | Risque upstream selon chemin exploitable. | Dependabot actif, `audit:ci` high/critical, revue hebdo advisories. | P2 |
-| P21 | `src/config/env.ts:234-366` + `src/plugins/jwt.ts:7-32` | JWT algorithm | Moyenne | Securite | RS256 est supporte, mais la rotation multi-cle reste basique via un seul `JWT_KEY_ID`. | Rotation zero-downtime limitee si plusieurs cles publiques doivent etre acceptees simultanement. | Ajouter un JWKS/keyring public pour verification multi-kid avant rotation enterprise. | P2 |
+| P20 | Dependances | `npm audit` | Moyenne | Supply chain | Advisories Prisma/Hono et `tsx`/`esbuild` signalees sans fix upstream. | Risque upstream selon chemin exploitable; `tsx`/`esbuild` touche surtout dev/test tooling. | Dependabot actif, `audit:ci` bloque high/critical runtime avec `--omit=dev`, `audit:full` garde la visibilite complete. | P2 |
+| P21 | `src/plugins/jwt.ts:8-83` + `src/plugins/jwks.ts:1-50` | JWT keyring | Faible | Securite | JWKS/keyring multi-kid existe; il faut encore un runbook rotation et tests avec vraies cles PEM. | Rotation mal executee peut casser les validateurs externes. | Tester rotation RS256 en staging: ancien kid verifiable, nouveau kid signe, retrait apres expiration max access token. | P2 |
 | P22 | `prisma/migrations/20260613120000_session_revoked_at/migration.sql` | Session audit | Faible | DB | `Session.revokedAt` est ajoute pour audit, mais pas encore exploite dans cleanup analytique. | Les sessions revoquees peuvent rester sans politique de retention fine. | Ajouter retention/reporting par `revokedAt` dans le job cleanup ou BI securite. | P3 |
 
 ## C. Analyse fichier par fichier
@@ -243,19 +243,21 @@ Points corrects:
 
 - Chiffrement `enc:v1:<keyId>:` pour body email (`email.ts:183-193`).
 - Scrub body apres `SENT` (`email.ts:529-548`).
-- `SENT_UNKNOWN` si SMTP/provider accepte mais update DB echoue (`email.ts:459-503`).
+- `SENT_UNKNOWN` si SMTP/provider accepte mais update DB echoue (`email.ts:477-537`).
 - Heartbeat lock pour eviter stale lock pendant provider lent (`email.ts:517-538`).
 - Legacy encryption/scrub jobs (`email.ts:682-764`).
-- Correction appliquee: erreurs delivery/heartbeat/persistence passent par `reportOperationalError`, et `lastErrorSource` reflete `SMTP` ou `HTTP_PROVIDER` (`email.ts:352-455`).
+- Provider Resend reel avec `Idempotency-Key` natif et `providerMessageId` mappe (`email.ts:324-379`).
+- Commande de revue `npm run email:outbox:sent-unknown` sans exposer les bodies chiffres/scrubbes.
+- Correction appliquee: erreurs delivery/heartbeat/persistence passent par `reportOperationalError`, et `lastErrorSource` reflete `SMTP`, `RESEND` ou `HTTP_PROVIDER` (`email.ts:397-470`).
 
 Risques restants:
 
-- Provider HTTP generique, pas encore certifie contre une API email reelle.
+- Adapter Resend a valider en staging/sandbox provider.
 - SMTP reste best-effort par nature.
 
 Correction:
 
-- Adapter provider officiel + test sandbox + alerte `SENT_UNKNOWN`.
+- Garder Resend ou un provider HTTP avec idempotency key reelle, ajouter test sandbox/provider contractuel, et deployer l'alerte `SENT_UNKNOWN`.
 
 ### `src/config/env.ts`
 
@@ -304,15 +306,16 @@ Role: plugin cookie + JWT.
 Points corrects:
 
 - HS256 reste le mode par defaut avec algorithme explicitement signe/verifie.
-- RS256 est maintenant supporte via `JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`, avec `JWT_KEY_ID` optionnel dans le header.
+- RS256 est maintenant supporte via `JWT_PRIVATE_KEY`, `JWT_KEY_ID`, et `JWT_PUBLIC_KEY` ou `JWT_PUBLIC_KEYS`.
+- Verification multi-kid via keyring public et `GET /.well-known/jwks.json`.
 
 Risques restants:
 
-- La rotation enterprise multi-cle n'est pas complete: il manque un JWKS/keyring permettant de verifier plusieurs `kid` pendant une rotation.
+- La rotation enterprise doit encore etre repetee en staging avec de vraies cles PEM et des validateurs externes.
 
 Correction:
 
-- Garder HS256 pour monolithe simple; utiliser RS256 si plusieurs services valident les tokens, puis ajouter un JWKS interne avant rotation zero-downtime.
+- Garder HS256 pour monolithe simple; utiliser RS256 si plusieurs services valident les tokens, puis tester la rotation zero-downtime: publier ancienne+nouvelle cle, signer avec le nouveau `JWT_KEY_ID`, attendre l'expiration maximale des access tokens, retirer l'ancienne cle.
 
 ### `prisma/schema.prisma`
 
@@ -339,7 +342,7 @@ Correction:
 Points corrects:
 
 - CI PostgreSQL force `RUN_DB_TESTS=true`, `migrate deploy`, seed, preflight, outbox jobs, Prisma diff, tests, build (`api-ci.yml:57-69`).
-- Dependabot active pour npm/Fastify/Prisma/Hono (`dependabot.yml:1-18`).
+- Dependabot actif pour npm/Fastify/Prisma/Hono/tsx/esbuild (`dependabot.yml:1-18`).
 - Alertes Prometheus pour `SENT_UNKNOWN`, audit failure, security event failure (`prometheus-alerts.yml:4-30`).
 
 Risques restants:
@@ -470,7 +473,7 @@ Securite:
 1. Rendre `Idempotency-Key` obligatoire dans le client refresh.
 2. Garder MFA/API key non exposes jusqu'a policy complete.
 3. Supprimer fallback legacy secrets apres deadline.
-4. Pour RS256 enterprise, ajouter keyring/JWKS de verification multi-cles.
+4. Pour RS256 enterprise, tester le keyring/JWKS avec de vraies cles PEM et validateurs externes.
 
 Architecture:
 
@@ -492,21 +495,21 @@ Production readiness:
 
 1. Deployer Prometheus alerts.
 2. Branch protections GitHub.
-3. Provider email HTTP idempotent.
+3. Provider email Resend ou HTTP idempotent teste en staging.
 4. OTel ou Prometheus collector multi-instance.
 
 ## I. Top 20 corrections prioritaires
 
 1. Preflight/backfill tenant sur DB cible.
 2. Branch protections CI obligatoires.
-3. Provider email HTTP avec idempotency key reelle.
-4. Runbook/dashboard `SENT_UNKNOWN`.
+3. Provider email Resend/HTTP avec idempotency key reelle teste en staging.
+4. Runbook/dashboard `SENT_UNKNOWN` branche a l'alerte.
 5. Tests DB CHECK `ApiKey_owner_xor_check`.
 6. Tests migration tenant fixture NULL.
 7. Idempotency key refresh obligatoire cote client.
 8. Tests cookies auth/refresh/CSRF.
 9. Deploiement Prometheus alert rules.
-10. Integration logger/SIEM pour `reportOperationalError`.
+10. Deployer webhook SIEM/alerte pour `reportOperationalError`.
 11. OTel/Prometheus collector multi-instance.
 12. Supprimer legacy secret fallback apres deadline.
 13. Ne pas exposer MFA avant recovery/rate-limit/audit.
@@ -514,9 +517,9 @@ Production readiness:
 15. Ajouter OpenAPI auth.
 16. Route builders metier pour guards tenant.
 17. Tests RBAC sur routes ERP reelles.
-18. Provider email sandbox tests.
+18. Provider email sandbox tests Resend/HTTP.
 19. Runbook rotation pepper/email/idempotency secrets.
-20. Revue hebdo npm advisories Prisma/Fastify/Hono.
+20. Revue hebdo npm advisories Prisma/Fastify/Hono/tsx/esbuild.
 21. Ajouter retention/reporting securite base sur `Session.revokedAt`.
 
 ## J. Version ideale attendue
@@ -529,7 +532,7 @@ Le niveau final attendu:
 - Outbox email transactionnelle, chiffree, idempotente provider, monitorable.
 - Tenant boundary obligatoire par construction des routes.
 - CI DB obligatoire, migrations verifiees, drift detecte.
-- Observabilite SIEM/OTel, audit et security events exploitables.
+- Observabilite SIEM/OTel, audit, operational events et security events exploitables.
 - MFA/API keys exposes seulement avec parcours complet, recovery, audit et rate-limit.
 
 ## K. Code corrige / patchs

@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "crypto";
 import { z } from "zod";
 
 const DEVELOPMENT_SECRET_MARKERS = new Set([
@@ -111,6 +112,46 @@ function parseSecretKeyring(value: string | undefined) {
   }
 }
 
+function parseStringKeyring(value: string | undefined) {
+  if (!value) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function canCreatePrivateKey(value: string) {
+  try {
+    crypto.createPrivateKey(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function canCreatePublicKey(value: string) {
+  try {
+    crypto.createPublicKey(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const envSchema = z
   .object({
     NODE_ENV: z
@@ -176,7 +217,7 @@ const envSchema = z
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
     SMTP_FROM: z.string().email().default("noreply@example.com"),
-    EMAIL_PROVIDER: z.enum(["smtp", "http"]).default("smtp"),
+    EMAIL_PROVIDER: z.enum(["smtp", "http", "resend"]).default("smtp"),
     EMAIL_ALLOW_SMTP_BEST_EFFORT: booleanFromEnv.default(false),
     EMAIL_HTTP_API_URL: z.string().url().optional(),
     EMAIL_HTTP_API_KEY: z.string().min(16).optional(),
@@ -187,6 +228,7 @@ const envSchema = z
         "EMAIL_HTTP_IDEMPOTENCY_HEADER is invalid"
       )
       .default("Idempotency-Key"),
+    RESEND_API_KEY: z.string().min(16).optional(),
     EMAIL_PROVIDER_TIMEOUT_MS: z.coerce
       .number()
       .int()
@@ -221,6 +263,16 @@ const envSchema = z
     METRICS_ENABLED: booleanFromEnv.default(false),
     METRICS_TOKEN: z.string().min(16).optional(),
     METRICS_INSTANCE_ID: z.string().min(1).optional(),
+    OPERATIONAL_EVENTS_WEBHOOK_URL: z.string().url().optional(),
+    OPERATIONAL_EVENTS_WEBHOOK_TOKEN: z.string().min(16).optional(),
+    OPERATIONAL_EVENTS_TIMEOUT_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3000),
+    OTEL_SERVICE_NAME: z.string().min(1).default("erp-api"),
+    OTEL_DEPLOYMENT_ENVIRONMENT: z.string().min(1).optional(),
+    OTEL_RESOURCE_ATTRIBUTES: z.string().optional(),
     TOKEN_CLEANUP_WORKER_ENABLED: booleanFromEnv.default(false),
     TOKEN_CLEANUP_EXTERNAL_SCHEDULED: booleanFromEnv.default(false),
     TOKEN_CLEANUP_WORKER_INTERVAL_MS: z.coerce
@@ -230,6 +282,9 @@ const envSchema = z
       .default(60 * 60 * 1000),
     HELMET_CSP_ENABLED: booleanFromEnv.default(false),
     SERVE_WEB_CONTENT: booleanFromEnv.default(false),
+    API_KEY_ENDPOINTS_ENABLED: booleanFromEnv.default(false),
+    MFA_ENDPOINTS_ENABLED: booleanFromEnv.default(false),
+    AUTH_ENTERPRISE_FEATURES_POLICY_ACK: z.string().optional(),
 
     JWT_ALGORITHM: z
       .enum(["HS256", "RS256"])
@@ -240,6 +295,7 @@ const envSchema = z
       .optional(),
     JWT_PRIVATE_KEY: z.string().optional(),
     JWT_PUBLIC_KEY: z.string().optional(),
+    JWT_PUBLIC_KEYS: z.string().optional(),
     JWT_KEY_ID: z
       .string()
       .regex(KEY_ID_PATTERN, "JWT_KEY_ID is invalid")
@@ -309,19 +365,102 @@ const envSchema = z
     }
 
     if (env.JWT_ALGORITHM === "RS256") {
+      if (!env.JWT_KEY_ID) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["JWT_KEY_ID"],
+          message: "JWT_KEY_ID is required when JWT_ALGORITHM=RS256",
+        });
+      }
+
       if (!env.JWT_PRIVATE_KEY) {
         ctx.addIssue({
           code: "custom",
           path: ["JWT_PRIVATE_KEY"],
           message: "JWT_PRIVATE_KEY is required when JWT_ALGORITHM=RS256",
         });
+      } else if (!canCreatePrivateKey(env.JWT_PRIVATE_KEY)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["JWT_PRIVATE_KEY"],
+          message:
+            "JWT_PRIVATE_KEY must be a valid PEM private key when JWT_ALGORITHM=RS256",
+        });
       }
 
       if (!env.JWT_PUBLIC_KEY) {
+        const publicKeys = parseStringKeyring(env.JWT_PUBLIC_KEYS);
+        const hasActivePublicKey =
+          publicKeys !== null &&
+          Boolean(
+            env.JWT_KEY_ID &&
+              typeof publicKeys[env.JWT_KEY_ID] === "string"
+          );
+
+        if (!hasActivePublicKey) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["JWT_PUBLIC_KEY"],
+            message:
+              "JWT_PUBLIC_KEY or JWT_PUBLIC_KEYS[JWT_KEY_ID] is required when JWT_ALGORITHM=RS256",
+          });
+        }
+      } else if (!canCreatePublicKey(env.JWT_PUBLIC_KEY)) {
         ctx.addIssue({
           code: "custom",
           path: ["JWT_PUBLIC_KEY"],
-          message: "JWT_PUBLIC_KEY is required when JWT_ALGORITHM=RS256",
+          message:
+            "JWT_PUBLIC_KEY must be a valid PEM public key when JWT_ALGORITHM=RS256",
+        });
+      }
+    }
+
+    const jwtPublicKeyring = parseStringKeyring(env.JWT_PUBLIC_KEYS);
+
+    if (jwtPublicKeyring === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_PUBLIC_KEYS"],
+        message: "JWT_PUBLIC_KEYS must be a JSON object of key ids to PEM public keys",
+      });
+    } else {
+      for (const [keyId, publicKey] of Object.entries(jwtPublicKeyring)) {
+        if (!KEY_ID_PATTERN.test(keyId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["JWT_PUBLIC_KEYS"],
+            message: `Invalid JWT public key id: ${keyId}`,
+          });
+        }
+
+        if (typeof publicKey !== "string" || publicKey.trim().length === 0) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["JWT_PUBLIC_KEYS"],
+            message: "Every JWT_PUBLIC_KEYS value must be a non-empty public key",
+          });
+        } else if (
+          env.JWT_ALGORITHM === "RS256" &&
+          !canCreatePublicKey(publicKey)
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["JWT_PUBLIC_KEYS"],
+            message: `Invalid JWT public key for key id: ${keyId}`,
+          });
+        }
+      }
+
+      if (
+        env.JWT_ALGORITHM === "RS256" &&
+        env.JWT_PUBLIC_KEYS &&
+        env.JWT_KEY_ID &&
+        !(env.JWT_KEY_ID in jwtPublicKeyring)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["JWT_KEY_ID"],
+          message: "JWT_KEY_ID must exist in JWT_PUBLIC_KEYS",
         });
       }
     }
@@ -353,6 +492,15 @@ const envSchema = z
         path: ["JWT_PUBLIC_KEY"],
         message:
           "JWT_PUBLIC_KEY may only be used when JWT_ALGORITHM=RS256",
+      });
+    }
+
+    if (env.JWT_PUBLIC_KEYS && env.JWT_ALGORITHM !== "RS256") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["JWT_PUBLIC_KEYS"],
+        message:
+          "JWT_PUBLIC_KEYS may only be used when JWT_ALGORITHM=RS256",
       });
     }
 
@@ -499,6 +647,14 @@ const envSchema = z
       }
     }
 
+    if (env.EMAIL_PROVIDER === "resend" && !env.RESEND_API_KEY) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["RESEND_API_KEY"],
+        message: "RESEND_API_KEY is required when EMAIL_PROVIDER=resend",
+      });
+    }
+
     const emailKeyring = parseEmailOutboxKeyring(
       env.EMAIL_OUTBOX_ENCRYPTION_KEYS
     );
@@ -548,6 +704,44 @@ const envSchema = z
         code: "custom",
         path: ["METRICS_TOKEN"],
         message: "METRICS_TOKEN is required when metrics are enabled",
+      });
+    }
+
+    if (
+      env.OPERATIONAL_EVENTS_WEBHOOK_TOKEN &&
+      !env.OPERATIONAL_EVENTS_WEBHOOK_URL
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["OPERATIONAL_EVENTS_WEBHOOK_URL"],
+        message:
+          "OPERATIONAL_EVENTS_WEBHOOK_URL is required when OPERATIONAL_EVENTS_WEBHOOK_TOKEN is set",
+      });
+    }
+
+    if (
+      (env.API_KEY_ENDPOINTS_ENABLED || env.MFA_ENDPOINTS_ENABLED) &&
+      env.AUTH_ENTERPRISE_FEATURES_POLICY_ACK !==
+        "rotation-recovery-audit-rate-limit-approved"
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AUTH_ENTERPRISE_FEATURES_POLICY_ACK"],
+        message:
+          "API key or MFA endpoints require an approved rotation/recovery/audit/rate-limit policy acknowledgement",
+      });
+    }
+
+    if (
+      env.NODE_ENV === "production" &&
+      env.OPERATIONAL_EVENTS_WEBHOOK_URL &&
+      !env.OPERATIONAL_EVENTS_WEBHOOK_TOKEN
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["OPERATIONAL_EVENTS_WEBHOOK_TOKEN"],
+        message:
+          "OPERATIONAL_EVENTS_WEBHOOK_TOKEN is required in production when OPERATIONAL_EVENTS_WEBHOOK_URL is set",
       });
     }
 
@@ -622,7 +816,7 @@ const envSchema = z
         code: "custom",
         path: ["EMAIL_ALLOW_SMTP_BEST_EFFORT"],
         message:
-          "SMTP only provides best-effort idempotency. Use EMAIL_PROVIDER=http or set EMAIL_ALLOW_SMTP_BEST_EFFORT=true explicitly.",
+          "SMTP only provides best-effort idempotency. Use EMAIL_PROVIDER=resend/http or set EMAIL_ALLOW_SMTP_BEST_EFFORT=true explicitly.",
       });
     }
 

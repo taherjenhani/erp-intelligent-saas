@@ -332,7 +332,77 @@ async function deliverEmailViaHttpProvider(message: StoredEmailMessage) {
   }
 }
 
+export async function deliverEmailViaResendProvider(
+  message: StoredEmailMessage
+) {
+  if (!env.RESEND_API_KEY) {
+    throw new Error("RESEND_API_KEY is required for Resend email delivery");
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => {
+    controller.abort();
+  }, env.EMAIL_PROVIDER_TIMEOUT_MS);
+
+  try {
+    const response = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${env.RESEND_API_KEY}`,
+        "Idempotency-Key": message.idempotencyKey,
+      },
+      body: JSON.stringify({
+        from: env.SMTP_FROM,
+        to: [message.to],
+        subject: message.subject,
+        text: message.text,
+        html: message.html,
+        headers: {
+          "X-ERP-Message-ID": message.messageId,
+        },
+      }),
+    });
+
+    const body = (await response.json().catch(() => null)) as
+      | {
+          id?: unknown;
+          messageId?: unknown;
+          name?: unknown;
+          message?: unknown;
+        }
+      | null;
+
+    if (!response.ok) {
+      const providerError =
+        typeof body?.name === "string" ? body.name : "unknown_error";
+      const providerMessage =
+        typeof body?.message === "string"
+          ? body.message
+          : `Resend API failed with HTTP ${response.status}`;
+
+      throw new Error(`${providerError}: ${providerMessage}`);
+    }
+
+    return {
+      providerMessageId:
+        typeof body?.id === "string"
+          ? body.id
+          : typeof body?.messageId === "string"
+            ? body.messageId
+            : message.messageId,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function deliverEmail(message: StoredEmailMessage) {
+  if (env.EMAIL_PROVIDER === "resend") {
+    return deliverEmailViaResendProvider(message);
+  }
+
   if (env.EMAIL_PROVIDER === "http") {
     return deliverEmailViaHttpProvider(message);
   }
@@ -350,6 +420,10 @@ function errorMessage(error: unknown) {
 }
 
 function deliveryErrorSource() {
+  if (env.EMAIL_PROVIDER === "resend") {
+    return "RESEND";
+  }
+
   return env.EMAIL_PROVIDER === "http" ? "HTTP_PROVIDER" : "SMTP";
 }
 
@@ -677,6 +751,32 @@ export async function processEmailOutbox(limit = env.EMAIL_OUTBOX_BATCH_SIZE) {
   );
 
   return processed;
+}
+
+export async function listSentUnknownEmailOutbox(limit = 50) {
+  return prisma.emailOutbox.findMany({
+    where: {
+      status: "SENT_UNKNOWN",
+    },
+    orderBy: {
+      sentUnknownAt: "desc",
+    },
+    take: limit,
+    select: {
+      id: true,
+      messageId: true,
+      idempotencyKey: true,
+      to: true,
+      subject: true,
+      providerMessageId: true,
+      attempts: true,
+      lastError: true,
+      lastErrorSource: true,
+      createdAt: true,
+      updatedAt: true,
+      sentUnknownAt: true,
+    },
+  });
 }
 
 export async function encryptLegacyEmailOutboxBatch(limit = 100) {

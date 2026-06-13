@@ -57,6 +57,9 @@ jobs:
 
       - run: npm ci
       - run: npm run audit:ci
+      - name: Full dependency audit visibility
+        run: npm run audit:full
+        continue-on-error: true
       - run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE erp_saas_shadow;"
       - run: npx prisma migrate deploy
       - run: npx prisma db seed

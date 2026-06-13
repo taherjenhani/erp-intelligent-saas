@@ -15,3 +15,4 @@ process.env.CSRF_SECRET ??=
 process.env.EMAIL_OUTBOX_ENCRYPTION_KEY_ID ??= "test-email-key";
 process.env.EMAIL_OUTBOX_ENCRYPTION_KEY ??=
   "test_email_outbox_encryption_key_minimum_32_chars";
+process.env.RESEND_API_KEY ??= "re_test_api_key_minimum_16";

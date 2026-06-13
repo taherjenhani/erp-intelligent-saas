@@ -52,3 +52,19 @@ test("GET / ignores unsafe correlation id headers", async () => {
     await app.close();
   }
 });
+
+test("GET /.well-known/jwks.json is disabled unless RS256 is configured", async () => {
+  const app = buildApp();
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/.well-known/jwks.json",
+    });
+
+    assert.equal(response.statusCode, 404);
+    assert.equal(response.json().code, "JWKS_NOT_ENABLED");
+  } finally {
+    await app.close();
+  }
+});

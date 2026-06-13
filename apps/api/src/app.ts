@@ -5,6 +5,7 @@ import { env } from "./config/env";
 import { authRoutes } from "./modules/auth/auth.route";
 import emailOutboxWorkerPlugin from "./plugins/emailOutboxWorker";
 import errorHandlerPlugin from "./plugins/errorHandler";
+import jwksPlugin from "./plugins/jwks";
 import jwtPlugin from "./plugins/jwt";
 import metricsPlugin from "./plugins/metrics";
 import requestContextPlugin from "./plugins/requestContext";
@@ -35,6 +36,7 @@ export function buildApp() {
 
   app.register(requestContextPlugin);
   app.register(jwtPlugin);
+  app.register(jwksPlugin);
   app.register(securityPlugin);
   app.register(emailOutboxWorkerPlugin);
   app.register(tokenCleanupWorkerPlugin);

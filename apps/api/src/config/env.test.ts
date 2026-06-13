@@ -1,8 +1,25 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import test from "node:test";
 import "../test/setup-env";
 
 import { parseEnv } from "./env";
+
+const rsaKeyPair = crypto.generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+});
+const previousRsaKeyPair = crypto.generateKeyPairSync("rsa", {
+  modulusLength: 2048,
+});
+const rsaPrivateKey = rsaKeyPair.privateKey
+  .export({ format: "pem", type: "pkcs8" })
+  .toString();
+const rsaPublicKey = rsaKeyPair.publicKey
+  .export({ format: "pem", type: "spki" })
+  .toString();
+const previousRsaPublicKey = previousRsaKeyPair.publicKey
+  .export({ format: "pem", type: "spki" })
+  .toString();
 
 const requiredEnv = {
   DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/test",
@@ -41,8 +58,8 @@ test("parseEnv accepts RS256 when key pair is configured", () => {
   const parsed = parseEnv({
     ...requiredEnv,
     JWT_ALGORITHM: "RS256",
-    JWT_PRIVATE_KEY: "test_private_key_minimum_value",
-    JWT_PUBLIC_KEY: "test_public_key_minimum_value",
+    JWT_PRIVATE_KEY: rsaPrivateKey,
+    JWT_PUBLIC_KEY: rsaPublicKey,
     JWT_KEY_ID: "jwt-key-2026-06",
   });
 
@@ -55,8 +72,50 @@ test("parseEnv rejects asymmetric keys when HS256 is configured", () => {
     parseEnv({
       ...requiredEnv,
       JWT_ALGORITHM: "HS256",
-      JWT_PRIVATE_KEY: "test_private_key_minimum_value",
-      JWT_PUBLIC_KEY: "test_public_key_minimum_value",
+      JWT_PRIVATE_KEY: rsaPrivateKey,
+      JWT_PUBLIC_KEY: rsaPublicKey,
+    })
+  );
+});
+
+test("parseEnv accepts RS256 public keyring for zero-downtime rotation", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    JWT_ALGORITHM: "RS256",
+    JWT_PRIVATE_KEY: rsaPrivateKey,
+    JWT_KEY_ID: "jwt-key-2026-06",
+    JWT_PUBLIC_KEYS: JSON.stringify({
+      "jwt-key-2026-05": previousRsaPublicKey,
+      "jwt-key-2026-06": rsaPublicKey,
+    }),
+  });
+
+  assert.equal(parsed.JWT_ALGORITHM, "RS256");
+  assert.equal(parsed.JWT_KEY_ID, "jwt-key-2026-06");
+});
+
+test("parseEnv rejects RS256 keyring missing active key id", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      JWT_ALGORITHM: "RS256",
+      JWT_PRIVATE_KEY: rsaPrivateKey,
+      JWT_KEY_ID: "jwt-key-2026-06",
+      JWT_PUBLIC_KEYS: JSON.stringify({
+        "jwt-key-2026-05": previousRsaPublicKey,
+      }),
+    })
+  );
+});
+
+test("parseEnv rejects invalid RS256 PEM material", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      JWT_ALGORITHM: "RS256",
+      JWT_PRIVATE_KEY: "not-a-private-key",
+      JWT_PUBLIC_KEY: "not-a-public-key",
+      JWT_KEY_ID: "jwt-key-2026-06",
     })
   );
 });
@@ -222,6 +281,71 @@ test("parseEnv accepts HTTP email provider with idempotency key support", () => 
   assert.equal(parsed.EMAIL_HTTP_IDEMPOTENCY_HEADER, "Idempotency-Key");
 });
 
+test("parseEnv accepts Resend provider with native idempotency key support", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    EMAIL_PROVIDER: "resend",
+    RESEND_API_KEY: "re_test_api_key_minimum_16",
+  });
+
+  assert.equal(parsed.EMAIL_PROVIDER, "resend");
+  assert.equal(parsed.RESEND_API_KEY, "re_test_api_key_minimum_16");
+});
+
+test("parseEnv rejects Resend provider without API key", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      EMAIL_PROVIDER: "resend",
+    })
+  );
+});
+
+test("parseEnv protects MFA and API key endpoints behind policy acknowledgement", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      API_KEY_ENDPOINTS_ENABLED: "true",
+    })
+  );
+
+  const parsed = parseEnv({
+    ...requiredEnv,
+    API_KEY_ENDPOINTS_ENABLED: "true",
+    MFA_ENDPOINTS_ENABLED: "true",
+    AUTH_ENTERPRISE_FEATURES_POLICY_ACK:
+      "rotation-recovery-audit-rate-limit-approved",
+  });
+
+  assert.equal(parsed.API_KEY_ENDPOINTS_ENABLED, true);
+  assert.equal(parsed.MFA_ENDPOINTS_ENABLED, true);
+});
+
+test("parseEnv validates operational event webhook configuration", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      OPERATIONAL_EVENTS_WEBHOOK_TOKEN:
+        "operational_webhook_token_minimum_16",
+    })
+  );
+
+  const parsed = parseEnv({
+    ...requiredEnv,
+    OPERATIONAL_EVENTS_WEBHOOK_URL: "https://siem.example.com/events",
+    OPERATIONAL_EVENTS_WEBHOOK_TOKEN:
+      "operational_webhook_token_minimum_16",
+    OTEL_SERVICE_NAME: "erp-api",
+    OTEL_DEPLOYMENT_ENVIRONMENT: "test",
+    OTEL_RESOURCE_ATTRIBUTES: "service.namespace=erp,team=backend",
+  });
+
+  assert.equal(
+    parsed.OPERATIONAL_EVENTS_WEBHOOK_URL,
+    "https://siem.example.com/events"
+  );
+});
+
 test("parseEnv limits refresh idempotency replay TTL", () => {
   assert.throws(() =>
     parseEnv({
@@ -269,6 +393,28 @@ test("parseEnv allows production HTTP email provider without SMTP best-effort", 
   });
 
   assert.equal(parsed.EMAIL_PROVIDER, "http");
+});
+
+test("parseEnv allows production Resend email provider without SMTP best-effort", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    NODE_ENV: "production",
+    APP_URL: "https://app.example.com",
+    CORS_ORIGIN: "https://app.example.com",
+    COOKIE_DOMAIN: "example.com",
+    EMAIL_PROVIDER: "resend",
+    RESEND_API_KEY: "re_production_api_key_minimum_16",
+    RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+    EMAIL_OUTBOX_ENCRYPTION_KEY:
+      "production_email_outbox_encryption_key_minimum_32_chars",
+    CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
+    TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
+    REFRESH_IDEMPOTENCY_SECRET:
+      "production_refresh_idempotency_secret_minimum_32_chars",
+    TOKEN_CLEANUP_EXTERNAL_SCHEDULED: "true",
+  });
+
+  assert.equal(parsed.EMAIL_PROVIDER, "resend");
 });
 
 test("parseEnv requires production token cleanup schedule", () => {
