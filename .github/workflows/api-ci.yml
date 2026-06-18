@@ -67,7 +67,7 @@ jobs:
       - run: npm run email:outbox:encrypt-legacy
       - run: npm run email:outbox:rotate-key
       - run: npx prisma validate
-      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url "$SHADOW_DATABASE_URL" --exit-code
+      - run: npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
       - run: npm test
       - run: npm run test:integration:db
       - run: npm run build

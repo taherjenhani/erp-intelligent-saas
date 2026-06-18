@@ -98,7 +98,7 @@ npm run build
 
 Set `NODE_ENV=test` and `RUN_DB_TESTS=true`. `npm run test:integration` and `npm run test:integration:db` both fail fast without those guards, so DB tests cannot be accidentally skipped in CI. Use `npm run test:integration:optional` only for local smoke checks where skipped DB tests are intentional. Never point integration tests at production data.
 
-`npm run audit:ci` blocks high/critical runtime vulnerabilities with `--omit=dev`. `npm run audit:full` keeps visibility on development tooling advisories, including `tsx`/`esbuild`, but may fail while upstream has no patched release.
+`npm run audit:ci` blocks high/critical runtime vulnerabilities with `--omit=dev`. `npm run audit:full` keeps visibility on development tooling and optional SMTP advisories, including `tsx`/`esbuild` and `nodemailer`, but may fail while upstream has no patched release.
 
 ## 6. Check Remaining Known Risks
 
@@ -113,7 +113,7 @@ Set `NODE_ENV=test` and `RUN_DB_TESTS=true`. `npm run test:integration` and `npm
 - Keep `API_KEY_ENDPOINTS_ENABLED=false` and `MFA_ENDPOINTS_ENABLED=false` until the policy is approved. If a future release needs them, startup requires `AUTH_ENTERPRISE_FEATURES_POLICY_ACK=rotation-recovery-audit-rate-limit-approved`.
 - For RS256 deployments, keep current and previous public keys in `JWT_PUBLIC_KEYS`, sign only with `JWT_KEY_ID`, and verify external validators against `GET /.well-known/jwks.json` before rotating out old keys.
 - If the API serves Swagger, HTML docs or static web content, set `SERVE_WEB_CONTENT=true` and `HELMET_CSP_ENABLED=true` before deployment.
-- `npm run audit:full` currently reports Prisma/Hono advisories and `tsx`/`esbuild` advisories without a fix. Keep Dependabot enabled and upgrade as soon as patched versions are available.
+- Hono advisories are temporarily handled with npm `overrides` for Prisma transitive dependencies. `npm run audit:full` can still report `tsx`/`esbuild` and optional SMTP `nodemailer` advisories without a fix. Keep Dependabot enabled, upgrade as soon as patched versions are available, and remove overrides once Prisma carries patched Hono packages directly.
 
 ## 7. Enforce GitHub Branch Protection
 

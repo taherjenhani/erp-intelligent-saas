@@ -4,6 +4,7 @@ import "../../test/setup-env";
 
 import { buildApp } from "../../app";
 import {
+  activeEmailOutboxEncryptionKeyId,
   decryptEmailMessageFromStorage,
   encryptLegacyEmailOutboxBatch,
   enqueueEmail,
@@ -673,8 +674,14 @@ test("email outbox legacy encryption scrubs sent rows and rotates pending rows",
     assert.equal(sent.html, SCRUBBED_EMAIL_BODY);
     assert.equal(pending.text.includes(secret), false);
     assert.equal(pending.html.includes(secret), false);
-    assert.equal(pending.encryptionKeyId, "local-dev");
-    assert.equal(rotated.encryptionKeyId, "local-dev");
+    assert.equal(
+      pending.encryptionKeyId,
+      activeEmailOutboxEncryptionKeyId()
+    );
+    assert.equal(
+      rotated.encryptionKeyId,
+      activeEmailOutboxEncryptionKeyId()
+    );
     assert.equal(
       decryptEmailMessageFromStorage(pending).text,
       `pending ${secret}`

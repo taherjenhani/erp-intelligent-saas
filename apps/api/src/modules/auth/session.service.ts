@@ -647,6 +647,17 @@ export async function refreshSession(
   });
 
   if (!session) {
+    const idempotencyReplay =
+      await tryReplayRefreshIdempotencyResult(
+        matchedToken,
+        context,
+        new Date()
+      );
+
+    if (idempotencyReplay) {
+      return idempotencyReplay;
+    }
+
     const graceRefresh = await tryCreateGraceRefreshResult(
       matchedToken.id,
       context,

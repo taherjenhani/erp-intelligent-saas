@@ -63,17 +63,17 @@ async function recordLoginFailureLock(
       ${identity.identityType}::"LoginLockIdentityType",
       ${identity.identityKey},
       1,
-      CASE WHEN ${identity.maxFailures} <= 1 THEN ${lockedUntil} ELSE NULL END,
-      ${now},
-      ${now}
+      CASE WHEN ${identity.maxFailures} <= 1 THEN ${lockedUntil}::timestamp ELSE NULL::timestamp END,
+      ${now}::timestamp,
+      ${now}::timestamp
     )
     ON CONFLICT ("identityType", "identityKey") DO UPDATE SET
       "failedCount" = CASE
         WHEN "LoginLock"."lastFailureAt" IS NULL
-          OR "LoginLock"."lastFailureAt" < ${windowStart}
+          OR "LoginLock"."lastFailureAt" < ${windowStart}::timestamp
           OR (
             "LoginLock"."lockedUntil" IS NOT NULL
-            AND "LoginLock"."lockedUntil" < ${now}
+            AND "LoginLock"."lockedUntil" < ${now}::timestamp
           )
         THEN 1
         ELSE "LoginLock"."failedCount" + 1
@@ -82,20 +82,20 @@ async function recordLoginFailureLock(
         WHEN (
           CASE
             WHEN "LoginLock"."lastFailureAt" IS NULL
-              OR "LoginLock"."lastFailureAt" < ${windowStart}
+              OR "LoginLock"."lastFailureAt" < ${windowStart}::timestamp
               OR (
                 "LoginLock"."lockedUntil" IS NOT NULL
-                AND "LoginLock"."lockedUntil" < ${now}
+                AND "LoginLock"."lockedUntil" < ${now}::timestamp
               )
             THEN 1
             ELSE "LoginLock"."failedCount" + 1
           END
         ) >= ${identity.maxFailures}
-        THEN ${lockedUntil}
-        ELSE NULL
+        THEN ${lockedUntil}::timestamp
+        ELSE NULL::timestamp
       END,
-      "lastFailureAt" = ${now},
-      "updatedAt" = ${now}
+      "lastFailureAt" = ${now}::timestamp,
+      "updatedAt" = ${now}::timestamp
   `;
 }
 

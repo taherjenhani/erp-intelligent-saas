@@ -1,6 +1,5 @@
 import type { EmailOutbox, Prisma } from "@prisma/client";
 import crypto from "crypto";
-import nodemailer from "nodemailer";
 
 import { env } from "../config/env";
 import { incrementCounter, setGauge } from "./metrics";
@@ -214,7 +213,7 @@ export function decryptEmailMessageFromStorage(
   };
 }
 
-function buildTransport() {
+async function buildTransport() {
   if (!env.SMTP_HOST) {
     if (env.NODE_ENV === "production") {
       throw new Error("SMTP_HOST is required in production");
@@ -222,6 +221,12 @@ function buildTransport() {
 
     return null;
   }
+
+  const nodemailer = await import("nodemailer").catch(() => {
+    throw new Error(
+      "nodemailer is required when EMAIL_PROVIDER=smtp. Install it in the deployment or use EMAIL_PROVIDER=resend/http."
+    );
+  });
 
   return nodemailer.createTransport({
     host: env.SMTP_HOST,
@@ -241,7 +246,7 @@ function buildTransport() {
 }
 
 async function deliverEmailViaSmtp(message: StoredEmailMessage) {
-  const transport = buildTransport();
+  const transport = await buildTransport();
 
   if (!transport) {
     console.info("Email delivery skipped in development", {

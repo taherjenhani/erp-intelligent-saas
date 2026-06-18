@@ -45,7 +45,7 @@ Resume strict:
 | P17 | `src/plugins/security.ts:16-33` | Redis rate-limit | Moyenne | Production | Fail-closed au startup si Redis indisponible. | API refuse de demarrer en prod si Redis down. | C'est sur; documenter SLA Redis ou ajouter fallback explicite par env. | P2 |
 | P18 | `src/utils/token.ts:40-42` | Legacy token hash | Moyenne | Secrets | Fallback legacy vers `PASSWORD_PEPPER` tant que deadline active. | Blast radius prolonge jusqu'a retrait. | Planifier suppression apres `LEGACY_SECRET_FALLBACK_UNTIL`. | P2 |
 | P19 | `src/plugins/metrics.ts` + `monitoring/prometheus-alerts.yml` | Alerting | Moyenne | Production | Alertes existent pour audit/security/SENT_UNKNOWN, mais pas deployees par code. | Aucun signal si Prometheus rules non chargees. | Ajouter runbook verification des rules en staging/prod. | P2 |
-| P20 | Dependances | `npm audit` | Moyenne | Supply chain | Advisories Prisma/Hono et `tsx`/`esbuild` signalees sans fix upstream. | Risque upstream selon chemin exploitable; `tsx`/`esbuild` touche surtout dev/test tooling. | Dependabot actif, `audit:ci` bloque high/critical runtime avec `--omit=dev`, `audit:full` garde la visibilite complete. | P2 |
+| P20 | Dependances | `npm audit` | Moyenne | Supply chain | Hono est force via npm `overrides`; `tsx`/`esbuild` et SMTP optionnel `nodemailer` restent signales sans fix upstream dans `audit:full`. | Risque limite au dev tooling et au mode SMTP optionnel; le gate runtime `audit:ci` reste vert. | Dependabot actif, `audit:ci` bloque high/critical runtime avec `--omit=dev`, `audit:full` garde la visibilite complete. | P2 |
 | P21 | `src/plugins/jwt.ts:8-83` + `src/plugins/jwks.ts:1-50` | JWT keyring | Faible | Securite | JWKS/keyring multi-kid existe; il faut encore un runbook rotation et tests avec vraies cles PEM. | Rotation mal executee peut casser les validateurs externes. | Tester rotation RS256 en staging: ancien kid verifiable, nouveau kid signe, retrait apres expiration max access token. | P2 |
 | P22 | `prisma/migrations/20260613120000_session_revoked_at/migration.sql` | Session audit | Faible | DB | `Session.revokedAt` est ajoute pour audit, mais pas encore exploite dans cleanup analytique. | Les sessions revoquees peuvent rester sans politique de retention fine. | Ajouter retention/reporting par `revokedAt` dans le job cleanup ou BI securite. | P3 |
 
@@ -342,7 +342,7 @@ Correction:
 Points corrects:
 
 - CI PostgreSQL force `RUN_DB_TESTS=true`, `migrate deploy`, seed, preflight, outbox jobs, Prisma diff, tests, build (`api-ci.yml:57-69`).
-- Dependabot actif pour npm/Fastify/Prisma/Hono/tsx/esbuild (`dependabot.yml:1-18`).
+- Dependabot actif pour npm/Fastify/Prisma/Hono/tsx/esbuild/nodemailer (`dependabot.yml:1-18`); Hono est temporairement pince par npm `overrides`.
 - Alertes Prometheus pour `SENT_UNKNOWN`, audit failure, security event failure (`prometheus-alerts.yml:4-30`).
 
 Risques restants:
@@ -519,7 +519,7 @@ Production readiness:
 17. Tests RBAC sur routes ERP reelles.
 18. Provider email sandbox tests Resend/HTTP.
 19. Runbook rotation pepper/email/idempotency secrets.
-20. Revue hebdo npm advisories Prisma/Fastify/Hono/tsx/esbuild.
+20. Revue hebdo npm advisories Prisma/Fastify/Hono/tsx/esbuild/nodemailer et retrait des overrides quand Prisma embarque les versions corrigees.
 21. Ajouter retention/reporting securite base sur `Session.revokedAt`.
 
 ## J. Version ideale attendue

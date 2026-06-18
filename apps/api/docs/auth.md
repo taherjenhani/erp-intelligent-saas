@@ -70,7 +70,7 @@ SHADOW_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/erp_saas_shado
 Then verify migrations against the Prisma schema:
 
 ```powershell
-npx prisma migrate diff --from-migrations prisma/migrations --to-schema-datamodel prisma/schema.prisma --shadow-database-url $env:SHADOW_DATABASE_URL --exit-code
+npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
 ```
 
 ## Service Architecture
@@ -121,7 +121,7 @@ EMAIL_HTTP_API_KEY=provider-api-key
 EMAIL_HTTP_IDEMPOTENCY_HEADER=Idempotency-Key
 ```
 
-SMTP remains available for simple deployments:
+SMTP remains available for simple deployments, but production should prefer Resend or a provider API with a real idempotency key. The API loads `nodemailer` only when `EMAIL_PROVIDER=smtp`; if production installs dependencies with `--omit=dev`, include `nodemailer` in the deployment image or use `EMAIL_PROVIDER=resend/http`.
 
 ```env
 EMAIL_PROVIDER=smtp
@@ -274,7 +274,7 @@ Full dependency visibility, including dev tools:
 npm run audit:full
 ```
 
-`audit:full` currently reports Prisma/Hono moderate advisories and `tsx`/`esbuild` high advisories without an upstream fix. Track them through Dependabot and upgrade Prisma/Hono/tsx/esbuild when patched versions are available.
+`audit:full` currently reports `tsx`/`esbuild` and optional SMTP `nodemailer` advisories without an upstream fix. Hono advisories are pinned through npm `overrides` until Prisma ships the patched transitive versions directly. Track all of them through Dependabot and remove overrides when Prisma no longer needs them.
 Dependabot is configured in `.github/dependabot.yml` for `/apps/api`, grouped for Prisma and API security dependencies.
 
 Pre-deploy auth gate for a target database after any required tenant backfill:
