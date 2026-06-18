@@ -17,9 +17,7 @@ type OrganizationMatch = {
 
 const nullableTenantMigration = "20260604103000_auth_multitenant_outbox_hardening";
 
-function parseBackfillMap() {
-  const raw = process.env.STORE_ORGANIZATION_BACKFILL_MAP;
-
+export function parseBackfillMapFromRaw(raw: string | undefined) {
   if (!raw) {
     throw new Error(
       "STORE_ORGANIZATION_BACKFILL_MAP is required. Example: {\"storeCode\":\"organizationId\"}"
@@ -61,7 +59,11 @@ function parseBackfillMap() {
   return backfillMap;
 }
 
-async function hasStoreOrganizationColumn() {
+export function parseBackfillMap() {
+  return parseBackfillMapFromRaw(process.env.STORE_ORGANIZATION_BACKFILL_MAP);
+}
+
+export async function hasStoreOrganizationColumn() {
   const result = await prisma.$queryRaw<Array<{ exists: boolean }>>`
     SELECT EXISTS (
       SELECT 1
@@ -74,14 +76,15 @@ async function hasStoreOrganizationColumn() {
   return result[0]?.exists === true;
 }
 
-async function main() {
+export async function runStoreOrganizationBackfill(
+  backfillMap: BackfillMap
+) {
   if (!(await hasStoreOrganizationColumn())) {
     throw new Error(
       `Store.organizationId does not exist yet. Apply ${nullableTenantMigration} first because it adds the nullable tenant column required by this backfill.`
     );
   }
 
-  const backfillMap = parseBackfillMap();
   let updated = 0;
 
   await prisma.$transaction(async (tx) => {
@@ -155,21 +158,29 @@ async function main() {
   `;
   const remainingCount = Number(remaining[0]?.count ?? 0);
 
-  console.log("Store organization backfill completed", {
+  return {
     updated,
     remaining: remainingCount,
-  });
+  };
+}
 
-  if (remainingCount > 0) {
+async function main() {
+  const result = await runStoreOrganizationBackfill(parseBackfillMap());
+
+  console.log("Store organization backfill completed", result);
+
+  if (result.remaining > 0) {
     process.exitCode = 1;
   }
 }
 
-main()
-  .catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    await prisma.$disconnect();
-  });
+if (require.main === module) {
+  main()
+    .catch((error) => {
+      console.error(error);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      await prisma.$disconnect();
+    });
+}

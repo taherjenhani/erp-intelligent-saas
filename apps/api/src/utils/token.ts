@@ -4,6 +4,26 @@ import { isLegacySecretFallbackEnabled } from "./legacySecrets";
 
 const REFRESH_TOKEN_BYTES = 64;
 
+function parseTokenHashKeyring() {
+  const secrets = [env.TOKEN_HASH_SECRET];
+
+  if (!env.TOKEN_HASH_SECRET_KEYS) {
+    return secrets;
+  }
+
+  const parsed = JSON.parse(env.TOKEN_HASH_SECRET_KEYS) as Record<
+    string,
+    string
+  >;
+
+  return [
+    ...secrets,
+    ...Object.entries(parsed)
+      .filter(([, secret]) => secret !== env.TOKEN_HASH_SECRET)
+      .map(([, secret]) => secret),
+  ];
+}
+
 export function generateRandomToken(): string {
   return crypto
     .randomBytes(REFRESH_TOKEN_BYTES)
@@ -33,9 +53,11 @@ async function hashTokenWithSecret(
 export async function getTokenHashCandidates(
   token: string
 ): Promise<string[]> {
-  const candidates = [
-    await hashTokenWithSecret(token, env.TOKEN_HASH_SECRET),
-  ];
+  const candidates = await Promise.all(
+    parseTokenHashKeyring().map((secret) =>
+      hashTokenWithSecret(token, secret)
+    )
+  );
 
   if (isLegacySecretFallbackEnabled()) {
     candidates.push(await hashTokenWithSecret(token, env.PASSWORD_PEPPER));

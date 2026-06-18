@@ -68,3 +68,23 @@ test("GET /.well-known/jwks.json is disabled unless RS256 is configured", async 
     await app.close();
   }
 });
+
+test("MFA and API key routes are not exposed by default", async () => {
+  const app = buildApp();
+
+  try {
+    const mfaResponse = await app.inject({
+      method: "GET",
+      url: "/api/auth/mfa",
+    });
+    const apiKeyResponse = await app.inject({
+      method: "GET",
+      url: "/api/auth/api-keys",
+    });
+
+    assert.equal(mfaResponse.statusCode, 404);
+    assert.equal(apiKeyResponse.statusCode, 404);
+  } finally {
+    await app.close();
+  }
+});

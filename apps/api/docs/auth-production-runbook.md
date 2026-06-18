@@ -2,6 +2,15 @@
 
 This runbook is the operational checklist for deploying the API auth module safely.
 
+Detailed runbooks:
+
+- `docs/runbooks/tenant-migration.md`
+- `docs/runbooks/email-provider.md`
+- `docs/runbooks/github-branch-protection.md`
+- `docs/runbooks/key-rotation.md`
+- `docs/security/mfa-api-keys-policy.md`
+- `docs/security/secrets-management.md`
+
 ## 1. Preflight The Target Database
 
 Run this before deploying tenant hardening migrations on an existing database:

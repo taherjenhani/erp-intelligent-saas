@@ -8,11 +8,14 @@ import {
   decryptEmailMessageFromStorage,
   encryptLegacyEmailOutboxBatch,
   enqueueEmail,
+  processEmailOutbox,
   processQueuedEmail,
   rotateEmailOutboxEncryptionBatch,
   SCRUBBED_EMAIL_BODY,
 } from "../../lib/email";
 import { prisma } from "../../lib/prisma";
+import { runStoreOrganizationBackfill } from "../../jobs/backfillStoreOrganizations";
+import { runTenantPreflight } from "../../jobs/preflightTenantMigration";
 import { hashPassword } from "../../utils/hash";
 import { loginUser } from "./auth.service";
 
@@ -694,6 +697,135 @@ test("email outbox legacy encryption scrubs sent rows and rotates pending rows",
         },
       },
     });
+    await prisma.$disconnect();
+  }
+});
+
+test("email outbox does not blindly retry sent_unknown rows", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const to = `sent-unknown-no-retry-${Date.now()}@example.com`;
+
+  try {
+    await prisma.emailOutbox.create({
+      data: {
+        messageId: `<sent-unknown-no-retry-${Date.now()}@example.com>`,
+        idempotencyKey: `sent-unknown-no-retry-${Date.now()}`,
+        to,
+        subject: "Sent unknown no retry",
+        text: SCRUBBED_EMAIL_BODY,
+        html: SCRUBBED_EMAIL_BODY,
+        status: "SENT_UNKNOWN",
+        sentUnknownAt: new Date(),
+      },
+    });
+
+    await processEmailOutbox(50);
+    const email = await prisma.emailOutbox.findFirstOrThrow({
+      where: { to },
+    });
+
+    assert.equal(email.status, "SENT_UNKNOWN");
+  } finally {
+    await prisma.emailOutbox.deleteMany({
+      where: { to },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("tenant preflight fails on null store organization and passes after backfill", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const suffix = Date.now();
+  const organizationCode = `TENANT_ORG_${suffix}`;
+  const storeCode = `TENANT_STORE_${suffix}`;
+  const storeId = `tenant_store_${suffix}`;
+  let organizationId: string | null = null;
+
+  try {
+    await prisma.$executeRaw`
+      ALTER TABLE "Store" ALTER COLUMN "organizationId" DROP NOT NULL
+    `;
+
+    const organization = await prisma.organization.create({
+      data: {
+        name: "Tenant Test Organization",
+        code: organizationCode,
+      },
+    });
+    organizationId = organization.id;
+
+    await prisma.$executeRaw`
+      INSERT INTO "Store" (
+        "id",
+        "name",
+        "code",
+        "isActive",
+        "createdAt",
+        "updatedAt"
+      )
+      VALUES (
+        ${storeId},
+        'Tenant Test Store',
+        ${storeCode},
+        true,
+        NOW(),
+        NOW()
+      )
+    `;
+
+    const failedPreflight = await runTenantPreflight();
+
+    assert.equal(failedPreflight.ok, false);
+    if (failedPreflight.ok) {
+      throw new Error("Tenant preflight unexpectedly passed");
+    }
+
+    assert.equal(
+      failedPreflight.reason,
+      "stores_without_organization"
+    );
+
+    await assert.rejects(() =>
+      runStoreOrganizationBackfill({
+        UNKNOWN_STORE: organizationCode,
+      })
+    );
+    await assert.rejects(() =>
+      runStoreOrganizationBackfill({
+        [storeCode]: "UNKNOWN_ORGANIZATION",
+      })
+    );
+
+    const backfillResult = await runStoreOrganizationBackfill({
+      [storeCode]: organizationCode,
+    });
+    const passedPreflight = await runTenantPreflight();
+
+    assert.equal(backfillResult.updated, 1);
+    assert.equal(backfillResult.remaining, 0);
+    assert.equal(passedPreflight.ok, true);
+  } finally {
+    await prisma.store.deleteMany({
+      where: { code: storeCode },
+    });
+
+    if (organizationId) {
+      await prisma.organization.deleteMany({
+        where: { id: organizationId },
+      });
+    }
+
+    await prisma.$executeRaw`
+      ALTER TABLE "Store" ALTER COLUMN "organizationId" SET NOT NULL
+    `;
     await prisma.$disconnect();
   }
 });

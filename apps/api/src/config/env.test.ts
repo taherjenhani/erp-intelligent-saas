@@ -163,6 +163,33 @@ test("parseEnv requires separate refresh idempotency secret", () => {
   );
 });
 
+test("parseEnv validates token hash keyring and active key id", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    TOKEN_HASH_SECRET_KEY_ID: "token-2026-06",
+    TOKEN_HASH_SECRET: "active_token_hash_secret_minimum_32_chars",
+    TOKEN_HASH_SECRET_KEYS: JSON.stringify({
+      "token-2026-06": "active_token_hash_secret_minimum_32_chars",
+      "token-2026-01": "previous_token_hash_secret_minimum_32_chars",
+    }),
+  });
+
+  assert.equal(parsed.TOKEN_HASH_SECRET_KEY_ID, "token-2026-06");
+});
+
+test("parseEnv requires token hash keyring active key to match TOKEN_HASH_SECRET", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      TOKEN_HASH_SECRET_KEY_ID: "token-2026-06",
+      TOKEN_HASH_SECRET: "active_token_hash_secret_minimum_32_chars",
+      TOKEN_HASH_SECRET_KEYS: JSON.stringify({
+        "token-2026-06": "different_token_hash_secret_minimum_32_chars",
+      }),
+    })
+  );
+});
+
 test("parseEnv rejects local CORS origins in production", () => {
   assert.throws(() =>
     parseEnv({
@@ -321,6 +348,23 @@ test("parseEnv protects MFA and API key endpoints behind policy acknowledgement"
   assert.equal(parsed.MFA_ENDPOINTS_ENABLED, true);
 });
 
+test("parseEnv keeps MFA and API key endpoints disabled by default", () => {
+  const parsed = parseEnv(requiredEnv);
+
+  assert.equal(parsed.API_KEY_ENDPOINTS_ENABLED, false);
+  assert.equal(parsed.MFA_ENDPOINTS_ENABLED, false);
+});
+
+test("parseEnv rejects enterprise feature policy acknowledgement unless exact", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      MFA_ENDPOINTS_ENABLED: "true",
+      AUTH_ENTERPRISE_FEATURES_POLICY_ACK: "approved",
+    })
+  );
+});
+
 test("parseEnv validates operational event webhook configuration", () => {
   assert.throws(() =>
     parseEnv({
@@ -370,6 +414,30 @@ test("parseEnv requires explicit SMTP best-effort opt-in in production", () => {
       TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
     })
   );
+});
+
+test("parseEnv allows production SMTP only with explicit best-effort risk flag", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    NODE_ENV: "production",
+    APP_URL: "https://app.example.com",
+    CORS_ORIGIN: "https://app.example.com",
+    COOKIE_DOMAIN: "example.com",
+    EMAIL_PROVIDER: "smtp",
+    SMTP_HOST: "smtp.example.com",
+    EMAIL_ALLOW_SMTP_BEST_EFFORT: "true",
+    RATE_LIMIT_REDIS_URL: "redis://localhost:6379",
+    EMAIL_OUTBOX_ENCRYPTION_KEY:
+      "production_email_outbox_encryption_key_minimum_32_chars",
+    CSRF_SECRET: "production_csrf_secret_minimum_32_chars",
+    TOKEN_HASH_SECRET: "production_token_hash_secret_minimum_32_chars",
+    REFRESH_IDEMPOTENCY_SECRET:
+      "production_refresh_idempotency_secret_minimum_32_chars",
+    TOKEN_CLEANUP_EXTERNAL_SCHEDULED: "true",
+  });
+
+  assert.equal(parsed.EMAIL_PROVIDER, "smtp");
+  assert.equal(parsed.EMAIL_ALLOW_SMTP_BEST_EFFORT, true);
 });
 
 test("parseEnv allows production HTTP email provider without SMTP best-effort", () => {

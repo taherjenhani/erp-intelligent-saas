@@ -180,9 +180,10 @@ export function createEmailMessageId() {
   return `<${crypto.randomUUID()}@${outboxMessageIdDomain()}>`;
 }
 
-export function encryptEmailMessageForStorage(message: EmailMessage) {
-  const keyId = activeEmailOutboxEncryptionKeyId();
-
+export function encryptEmailMessageForStorage(
+  message: EmailMessage,
+  keyId = activeEmailOutboxEncryptionKeyId()
+) {
   return {
     ...message,
     text: encryptOutboxValue(message.text, keyId),
@@ -276,7 +277,9 @@ async function deliverEmailViaSmtp(message: StoredEmailMessage) {
   };
 }
 
-async function deliverEmailViaHttpProvider(message: StoredEmailMessage) {
+export async function deliverEmailViaHttpProvider(
+  message: StoredEmailMessage
+) {
   if (!env.EMAIL_HTTP_API_URL || !env.EMAIL_HTTP_API_KEY) {
     throw new Error(
       "EMAIL_HTTP_API_URL and EMAIL_HTTP_API_KEY are required for HTTP email delivery"

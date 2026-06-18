@@ -313,6 +313,11 @@ const envSchema = z
     TOKEN_HASH_SECRET: z
       .string()
       .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters"),
+    TOKEN_HASH_SECRET_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, "TOKEN_HASH_SECRET_KEY_ID is invalid")
+      .optional(),
+    TOKEN_HASH_SECRET_KEYS: z.string().optional(),
     REFRESH_IDEMPOTENCY_SECRET: z
       .string()
       .min(
@@ -592,6 +597,72 @@ const envSchema = z
           path: ["PASSWORD_PEPPER_KEYS"],
           message:
             "PASSWORD_PEPPER_KEYS active secret must match PASSWORD_PEPPER",
+        });
+      }
+    }
+
+    const tokenHashKeyring = parseSecretKeyring(env.TOKEN_HASH_SECRET_KEYS);
+
+    if (tokenHashKeyring === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["TOKEN_HASH_SECRET_KEYS"],
+        message:
+          "TOKEN_HASH_SECRET_KEYS must be a JSON object of key ids to secrets",
+      });
+    } else {
+      for (const [keyId, secret] of Object.entries(tokenHashKeyring)) {
+        if (!KEY_ID_PATTERN.test(keyId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["TOKEN_HASH_SECRET_KEYS"],
+            message: `Invalid token hash key id: ${keyId}`,
+          });
+        }
+
+        if (typeof secret !== "string" || secret.length < 32) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["TOKEN_HASH_SECRET_KEYS"],
+            message:
+              "Every TOKEN_HASH_SECRET_KEYS secret must contain at least 32 characters",
+          });
+        }
+      }
+
+      if (env.TOKEN_HASH_SECRET_KEYS && !env.TOKEN_HASH_SECRET_KEY_ID) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TOKEN_HASH_SECRET_KEY_ID"],
+          message:
+            "TOKEN_HASH_SECRET_KEY_ID is required when TOKEN_HASH_SECRET_KEYS is set",
+        });
+      }
+
+      if (
+        env.TOKEN_HASH_SECRET_KEYS &&
+        env.TOKEN_HASH_SECRET_KEY_ID &&
+        !(env.TOKEN_HASH_SECRET_KEY_ID in tokenHashKeyring)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TOKEN_HASH_SECRET_KEY_ID"],
+          message:
+            "TOKEN_HASH_SECRET_KEY_ID must exist in TOKEN_HASH_SECRET_KEYS",
+        });
+      }
+
+      if (
+        env.TOKEN_HASH_SECRET_KEYS &&
+        env.TOKEN_HASH_SECRET_KEY_ID &&
+        tokenHashKeyring[env.TOKEN_HASH_SECRET_KEY_ID] !==
+          env.TOKEN_HASH_SECRET
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TOKEN_HASH_SECRET_KEYS"],
+          message:
+            "TOKEN_HASH_SECRET_KEYS active secret must match TOKEN_HASH_SECRET",
         });
       }
     }

@@ -8,7 +8,7 @@
     "audit:ci": "npm audit --omit=dev --audit-level=high",
     "audit:full": "npm audit --audit-level=moderate",
     "predeploy:auth": "npm run audit:ci && npx prisma validate && npm run tenant:preflight && npm run email:outbox:encrypt-legacy",
-    "test": "tsx --test src/app.test.ts src/config/env.test.ts src/lib/email.test.ts src/lib/metrics.test.ts src/middlewares/role.middleware.test.ts src/modules/auth/auth.schema.test.ts",
+    "test": "tsx --test src/app.test.ts src/config/env.test.ts src/jobs/branchProtection.test.ts src/jobs/tenantMigration.test.ts src/lib/email.test.ts src/lib/metrics.test.ts src/middlewares/role.middleware.test.ts src/modules/auth/auth.schema.test.ts src/utils/hash.test.ts src/utils/token.test.ts",
     "test:integration": "tsx src/jobs/requireDbIntegrationTests.ts && tsx --test src/modules/auth/auth.integration.test.ts",
     "test:integration:optional": "tsx --test src/modules/auth/auth.integration.test.ts",
     "test:integration:db": "npm run test:integration",
@@ -18,7 +18,8 @@
     "email:outbox:encrypt-legacy": "tsx src/jobs/encryptEmailOutboxLegacy.ts",
     "email:outbox:rotate-key": "tsx src/jobs/rotateEmailOutboxKey.ts",
     "tenant:preflight": "tsx src/jobs/preflightTenantMigration.ts",
-    "tenant:backfill-stores": "tsx src/jobs/backfillStoreOrganizations.ts"
+    "tenant:backfill-stores": "tsx src/jobs/backfillStoreOrganizations.ts",
+    "github:branch-protection:check": "tsx src/jobs/checkBranchProtection.ts"
   },
   "dependencies": {
     "@fastify/cookie": "^11.0.2",
