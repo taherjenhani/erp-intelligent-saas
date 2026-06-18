@@ -62,6 +62,7 @@ jobs:
         continue-on-error: true
       - run: psql postgresql://postgres:postgres@localhost:5432/postgres -c "CREATE DATABASE erp_saas_shadow;"
       - run: npx prisma migrate deploy
+      - run: npx prisma generate
       - run: npx prisma db seed
       - run: npm run tenant:preflight
       - run: npm run email:outbox:encrypt-legacy
