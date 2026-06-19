@@ -108,6 +108,80 @@ test("POST /api/auth/login rejects missing CSRF token with structured error", as
   }
 });
 
+test("state-changing auth routes reject missing CSRF token", async () => {
+  const app = buildApp();
+  const routes = [
+    {
+      url: "/api/auth/register",
+      payload: {
+        firstName: "Csrf",
+        lastName: "Tester",
+        email: "csrf-register@example.com",
+        password: "StrongPass1!",
+      },
+    },
+    {
+      url: "/api/auth/verify-email",
+      payload: {
+        token: "a".repeat(128),
+      },
+    },
+    {
+      url: "/api/auth/resend-verification",
+      payload: {
+        email: "csrf-resend@example.com",
+      },
+    },
+    {
+      url: "/api/auth/forgot-password",
+      payload: {
+        email: "csrf-forgot@example.com",
+      },
+    },
+    {
+      url: "/api/auth/reset-password",
+      payload: {
+        token: "a".repeat(128),
+        password: "StrongPass1!",
+      },
+    },
+    {
+      url: "/api/auth/refresh",
+      payload: {},
+    },
+    {
+      url: "/api/auth/logout",
+      payload: {},
+    },
+    {
+      url: "/api/auth/logout-all",
+      payload: {},
+    },
+    {
+      url: "/api/auth/change-password",
+      payload: {
+        currentPassword: "StrongPass1!",
+        newPassword: "NewStrongPass1!",
+      },
+    },
+  ];
+
+  try {
+    for (const route of routes) {
+      const response = await app.inject({
+        method: "POST",
+        url: route.url,
+        payload: route.payload,
+      });
+
+      assert.equal(response.statusCode, 403, route.url);
+      assert.equal(response.json().code, "CSRF_INVALID", route.url);
+    }
+  } finally {
+    await app.close();
+  }
+});
+
 test("MFA and API key routes are not exposed by default", async () => {
   const app = buildApp();
 

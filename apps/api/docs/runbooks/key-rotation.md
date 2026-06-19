@@ -66,6 +66,24 @@ npm run tokens:cleanup
 Then revoke active sessions if the old token hash secret is suspected
 compromised.
 
+## Legacy secret fallback deadline
+
+`LEGACY_SECRET_FALLBACK_UNTIL` is bounded and defaults to
+`2026-09-30T00:00:00.000Z`.
+
+Before that date:
+
+1. Confirm all production password hashes and token hashes have been migrated
+   to keyring-aware secrets.
+2. Run `npm run tokens:cleanup`.
+3. Confirm no active refresh/auth token still depends on legacy
+   `PASSWORD_PEPPER` fallback behavior.
+4. Open the mandatory removal ticket for the fallback code paths in
+   `src/utils/hash.ts`, `src/utils/token.ts`, and `src/utils/legacySecrets.ts`.
+
+After that date, production should treat fallback usage as an incident and
+remove the old secret path instead of extending it silently.
+
 ## Email outbox encryption key rotation
 
 Prepare:

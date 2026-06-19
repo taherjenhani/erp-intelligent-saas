@@ -77,3 +77,31 @@ test("branch protection runbook documents apply and verify commands", () => {
   assert.match(runbook, /npm run github:branch-protection:check/);
   assert.match(runbook, /direct push/i);
 });
+
+test("API CI runs the predeploy auth gate", () => {
+  const workflow = readFileSync(
+    "../../.github/workflows/api-ci.yml",
+    "utf8"
+  );
+
+  assert.match(workflow, /Run predeploy auth gate/);
+  assert.match(workflow, /npm run predeploy:auth/);
+});
+
+test("referenced production runbooks exist and are actionable", () => {
+  const runbooks = [
+    "docs/runbooks/tenant-migration.md",
+    "docs/runbooks/email-provider.md",
+    "docs/runbooks/github-branch-protection.md",
+    "docs/runbooks/key-rotation.md",
+    "docs/security/mfa-api-keys-policy.md",
+    "docs/security/secrets-management.md",
+  ];
+
+  for (const path of runbooks) {
+    const content = readFileSync(path, "utf8");
+
+    assert.equal(content.trim().length > 500, true, path);
+    assert.match(content, /npm|gh|env|checklist|policy|rotation|step/i, path);
+  }
+});

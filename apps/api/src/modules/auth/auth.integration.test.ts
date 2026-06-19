@@ -23,6 +23,11 @@ import {
   refreshSession,
   requestPasswordReset,
 } from "./auth.service";
+import {
+  assertForgotPasswordActionAllowed,
+  assertRegisterActionAllowed,
+  assertResendVerificationActionAllowed,
+} from "./auth-action-rate-limit.service";
 
 function getCookieHeader(setCookie: string | string[] | undefined) {
   if (!setCookie) {
@@ -65,6 +70,15 @@ test("auth routes register, verify, login and return /me", async (t) => {
     await prisma.user.deleteMany({
       where: { email },
     });
+
+    const readyResponse = await app.inject({
+      method: "GET",
+      url: "/readyz",
+    });
+
+    assert.equal(readyResponse.statusCode, 200);
+    assert.equal(readyResponse.json().status, "ok");
+    assert.equal(readyResponse.json().checks.database, "ok");
 
     const registerCsrf = await getCsrf(app);
     const registerResponse = await app.inject({
@@ -192,6 +206,16 @@ test("auth routes register, verify, login and return /me", async (t) => {
     });
 
     assert.equal(logoutResponse.statusCode, 200);
+    const logoutSetCookie = logoutResponse.headers["set-cookie"];
+    const clearedRefreshCookie = Array.isArray(logoutSetCookie)
+      ? logoutSetCookie.find((cookie) =>
+          cookie.startsWith("refreshToken=")
+        )
+      : logoutSetCookie;
+
+    assert.equal(typeof clearedRefreshCookie, "string");
+    assert.match(clearedRefreshCookie ?? "", /Max-Age=0/i);
+    assert.match(clearedRefreshCookie ?? "", /Path=\/api\/auth/i);
 
     const loggedOutSession =
       await prisma.session.findUniqueOrThrow({
@@ -495,6 +519,18 @@ test("concurrent refresh requests are idempotent", async (t) => {
       getCookieHeader(firstRefresh.headers["set-cookie"]),
       getCookieHeader(secondRefresh.headers["set-cookie"])
     );
+    const firstRefreshCookie = Array.isArray(
+      firstRefresh.headers["set-cookie"]
+    )
+      ? firstRefresh.headers["set-cookie"].find((cookie) =>
+          cookie.startsWith("refreshToken=")
+        )
+      : firstRefresh.headers["set-cookie"];
+
+    assert.equal(typeof firstRefreshCookie, "string");
+    assert.match(firstRefreshCookie ?? "", /HttpOnly/i);
+    assert.match(firstRefreshCookie ?? "", /SameSite=Strict/i);
+    assert.match(firstRefreshCookie ?? "", /Path=\/api\/auth/i);
   } finally {
     await prisma.emailOutbox.deleteMany({
       where: { to: email },
@@ -592,6 +628,122 @@ test("forgot password durable action limit blocks repeated email attempts", asyn
       where: {
         identityKey: email,
       },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("durable action limits block resend and register abuse", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const email = `resend-limit-${Date.now()}@example.com`;
+  const ipAddress = `198.51.100.${Date.now() % 200}`;
+
+  try {
+    await prisma.authActionRateLimit.deleteMany({
+      where: {
+        OR: [
+          { identityKey: email },
+          { identityKey: ipAddress },
+        ],
+      },
+    });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await assertResendVerificationActionAllowed(email);
+    }
+
+    await assert.rejects(
+      () => assertResendVerificationActionAllowed(email),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "RATE_LIMIT_EXCEEDED"
+    );
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await assertRegisterActionAllowed(ipAddress);
+    }
+
+    await assert.rejects(
+      () => assertRegisterActionAllowed(ipAddress),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "RATE_LIMIT_EXCEEDED"
+    );
+  } finally {
+    await prisma.authActionRateLimit.deleteMany({
+      where: {
+        OR: [
+          { identityKey: email },
+          { identityKey: ipAddress },
+        ],
+      },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("durable action limit resets after the window expires", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const email = `forgot-reset-window-${Date.now()}@example.com`;
+  const expiredWindow = new Date(Date.now() - 61 * 60 * 1000);
+
+  try {
+    await prisma.authActionRateLimit.deleteMany({
+      where: { identityKey: email },
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await assertForgotPasswordActionAllowed(email);
+    }
+
+    await assert.rejects(
+      () => assertForgotPasswordActionAllowed(email),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "RATE_LIMIT_EXCEEDED"
+    );
+
+    await prisma.authActionRateLimit.update({
+      where: {
+        action_identityKey: {
+          action: "FORGOT_PASSWORD",
+          identityKey: email,
+        },
+      },
+      data: {
+        windowStartedAt: expiredWindow,
+        lockedUntil: expiredWindow,
+      },
+    });
+
+    await assertForgotPasswordActionAllowed(email);
+
+    const resetLimit =
+      await prisma.authActionRateLimit.findUniqueOrThrow({
+        where: {
+          action_identityKey: {
+            action: "FORGOT_PASSWORD",
+            identityKey: email,
+          },
+        },
+      });
+
+    assert.equal(resetLimit.attempts, 1);
+    assert.equal(resetLimit.lockedUntil, null);
+  } finally {
+    await prisma.authActionRateLimit.deleteMany({
+      where: { identityKey: email },
     });
     await prisma.$disconnect();
   }

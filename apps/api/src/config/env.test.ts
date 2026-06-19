@@ -248,6 +248,21 @@ test("parseEnv validates email outbox keyring and active key id", () => {
   assert.equal(parsed.EMAIL_OUTBOX_ENCRYPTION_KEY_ID, "key-2026-06");
 });
 
+test("parseEnv requires email outbox active key to match keyring", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      EMAIL_OUTBOX_ENCRYPTION_KEY_ID: "key-2026-06",
+      EMAIL_OUTBOX_ENCRYPTION_KEY:
+        "wrong_email_outbox_key_minimum_32_chars",
+      EMAIL_OUTBOX_ENCRYPTION_KEYS: JSON.stringify({
+        "key-2026-06":
+          "active_email_outbox_key_minimum_32_chars",
+      }),
+    })
+  );
+});
+
 test("parseEnv validates password pepper keyring and active key id", () => {
   const parsed = parseEnv({
     ...requiredEnv,

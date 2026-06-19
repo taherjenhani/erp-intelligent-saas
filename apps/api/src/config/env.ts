@@ -821,6 +821,19 @@ const envSchema = z
             "EMAIL_OUTBOX_ENCRYPTION_KEY_ID must exist in EMAIL_OUTBOX_ENCRYPTION_KEYS",
         });
       }
+
+      if (
+        env.EMAIL_OUTBOX_ENCRYPTION_KEYS &&
+        emailKeyring[env.EMAIL_OUTBOX_ENCRYPTION_KEY_ID] !==
+          env.EMAIL_OUTBOX_ENCRYPTION_KEY
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["EMAIL_OUTBOX_ENCRYPTION_KEYS"],
+          message:
+            "EMAIL_OUTBOX_ENCRYPTION_KEYS active secret must match EMAIL_OUTBOX_ENCRYPTION_KEY",
+        });
+      }
     }
 
     if (env.METRICS_ENABLED && !env.METRICS_TOKEN) {

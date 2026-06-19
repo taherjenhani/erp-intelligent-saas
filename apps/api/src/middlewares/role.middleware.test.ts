@@ -10,6 +10,7 @@ import {
   assertStoreBelongsToOrganization,
   requireOrganizationPermission,
   requireOrganizationRole,
+  requirePlatformRole,
   requireStoreInOrganization,
   requireStorePermission,
   type RoleAccess,
@@ -175,6 +176,26 @@ test("requireOrganizationPermission checks tenant role permissions", async () =>
   await guard(request(baseAuth, { organizationId: "org-1" }), reply);
 });
 
+test("requirePlatformRole ignores legacy user role SUPER_ADMIN", async () => {
+  const audit = deniedAuditCapture();
+  const guard = requirePlatformRole(["SUPER_ADMIN"], {
+    access: access(),
+    ...audit.options,
+  });
+  const legacySuperAdminAuth: AuthContext = {
+    ...baseAuth,
+    role: "SUPER_ADMIN",
+    platformRole: "USER",
+  };
+
+  await assert.rejects(
+    () =>
+      guard(request(legacySuperAdminAuth, { organizationId: "org-1" }), reply),
+    PermissionError
+  );
+  assert.equal(audit.metadata()?.reason, "platform_role_not_allowed");
+});
+
 test("route access builders compose auth and tenant guards", () => {
   assert.equal(
     withOrgAccess("organizationId", "users.write").length,
@@ -185,5 +206,22 @@ test("route access builders compose auth and tenant guards", () => {
     withStoreOrgAccess("storeId", "organizationId", "stores.write")
       .length,
     3
+  );
+});
+
+test("withStoreOrgAccess fails explicitly when route params are missing", async () => {
+  const guards = withStoreOrgAccess(
+    "storeId",
+    "organizationId",
+    "stores.write",
+    {
+      access: access(),
+    }
+  );
+  const assertCoherentStore = guards[1];
+
+  await assert.rejects(
+    () => assertCoherentStore(request(baseAuth, {}), reply),
+    ValidationError
   );
 });
