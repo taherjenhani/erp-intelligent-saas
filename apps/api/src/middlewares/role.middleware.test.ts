@@ -4,9 +4,10 @@ import "../test/setup-env";
 import type { Role } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import { PermissionError } from "../lib/errors";
+import { PermissionError, ValidationError } from "../lib/errors";
 import type { AuthContext } from "./auth.middleware";
 import {
+  assertStoreBelongsToOrganization,
   requireOrganizationPermission,
   requireOrganizationRole,
   requireStoreInOrganization,
@@ -103,12 +104,14 @@ test("requireStorePermission denies missing store permission with audit metadata
   assert.equal(audit.metadata()?.storeId, "store-1");
 });
 
-test("requireStoreInOrganization denies cross-organization store access", async () => {
-  const audit = deniedAuditCapture();
-  const guard = requireStoreInOrganization("storeId", "organizationId", {
-    access: access(),
-    ...audit.options,
-  });
+test("assertStoreBelongsToOrganization rejects cross-organization store URLs", async () => {
+  const guard = assertStoreBelongsToOrganization(
+    "storeId",
+    "organizationId",
+    {
+      access: access(),
+    }
+  );
 
   await assert.rejects(
     () =>
@@ -119,9 +122,31 @@ test("requireStoreInOrganization denies cross-organization store access", async 
         }),
         reply
       ),
-    PermissionError
+    ValidationError
   );
-  assert.equal(audit.metadata()?.reason, "store_not_in_organization");
+});
+
+test("requireStoreInOrganization validates URL coherence before platform admin bypass", async () => {
+  const guard = requireStoreInOrganization("storeId", "organizationId", {
+    access: access(),
+  });
+  const superAdminAuth: AuthContext = {
+    ...baseAuth,
+    role: "EMPLOYEE",
+    platformRole: "SUPER_ADMIN",
+  };
+
+  await assert.rejects(
+    () =>
+      guard(
+        request(superAdminAuth, {
+          storeId: "store-1",
+          organizationId: "org-2",
+        }),
+        reply
+      ),
+    ValidationError
+  );
 });
 
 test("requireOrganizationRole allows tenant admin role", async () => {

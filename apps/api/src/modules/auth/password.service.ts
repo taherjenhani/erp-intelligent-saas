@@ -12,6 +12,7 @@ import {
   verifyPassword,
 } from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
+import { assertForgotPasswordActionAllowed } from "./auth-action-rate-limit.service";
 import {
   findPasswordResetUser,
   findUserPasswordById,
@@ -38,6 +39,9 @@ export async function requestPasswordReset(
   context: AuthContextInput = {}
 ) {
   const email = data.email.trim().toLowerCase();
+
+  await assertForgotPasswordActionAllowed(email);
+
   const user = await findPasswordResetUser(email);
 
   if (!user || !user.isActive) {
@@ -97,8 +101,6 @@ export async function resetPassword(
   data: ResetPasswordInput,
   context: AuthContextInput = {}
 ) {
-  const password = await hashPassword(data.password);
-
   const authToken = await prisma.$transaction(async (tx) => {
     const validToken = await findValidAuthToken(
       data.token,
@@ -125,6 +127,8 @@ export async function resetPassword(
       user.passwordPepperKeyId,
       tx
     );
+
+    const password = await hashPassword(data.password);
 
     await markAuthTokenUsed(
       validToken.id,

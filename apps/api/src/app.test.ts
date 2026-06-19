@@ -53,6 +53,23 @@ test("GET / ignores unsafe correlation id headers", async () => {
   }
 });
 
+test("GET /healthz returns liveness status", async () => {
+  const app = buildApp();
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/healthz",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().status, "ok");
+    assert.equal(typeof response.json().timestamp, "string");
+  } finally {
+    await app.close();
+  }
+});
+
 test("GET /.well-known/jwks.json is disabled unless RS256 is configured", async () => {
   const app = buildApp();
 
@@ -64,6 +81,28 @@ test("GET /.well-known/jwks.json is disabled unless RS256 is configured", async 
 
     assert.equal(response.statusCode, 404);
     assert.equal(response.json().code, "JWKS_NOT_ENABLED");
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /api/auth/login rejects missing CSRF token with structured error", async () => {
+  const app = buildApp();
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/auth/login",
+      payload: {
+        email: "csrf@example.com",
+        password: "StrongPass1!",
+      },
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().success, false);
+    assert.equal(response.json().code, "CSRF_INVALID");
+    assert.equal(typeof response.json().correlationId, "string");
   } finally {
     await app.close();
   }

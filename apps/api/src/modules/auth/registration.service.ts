@@ -13,6 +13,7 @@ import {
   hashPassword,
 } from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
+import { assertRegisterActionAllowed } from "./auth-action-rate-limit.service";
 import { toPublicUser } from "./auth.mapper";
 import {
   createRegisteredUser,
@@ -36,6 +37,8 @@ export async function registerUser(
   context: AuthContextInput = {}
 ) {
   const email = data.email.trim().toLowerCase();
+
+  await assertRegisterActionAllowed(context.ipAddress);
 
   let storeOrganizationId: string | null = null;
 

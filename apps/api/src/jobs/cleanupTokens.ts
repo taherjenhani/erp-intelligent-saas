@@ -3,6 +3,7 @@ import { prisma } from "../lib/prisma";
 const REFRESH_TOKEN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const LOGIN_ATTEMPT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 const LOGIN_LOCK_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+const AUTH_ACTION_RATE_LIMIT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 export async function cleanupExpiredTokens() {
   const now = new Date();
@@ -15,6 +16,9 @@ export async function cleanupExpiredTokens() {
   const loginLockCutoff = new Date(
     Date.now() - LOGIN_LOCK_RETENTION_MS
   );
+  const authActionRateLimitCutoff = new Date(
+    Date.now() - AUTH_ACTION_RATE_LIMIT_RETENTION_MS
+  );
 
   const [
     expiredSessions,
@@ -22,6 +26,7 @@ export async function cleanupExpiredTokens() {
     refreshTokens,
     loginAttempts,
     loginLocks,
+    authActionRateLimits,
     refreshIdempotencyResponses,
   ] =
     await prisma.$transaction([
@@ -75,6 +80,21 @@ export async function cleanupExpiredTokens() {
           ],
         },
       }),
+      prisma.authActionRateLimit.deleteMany({
+        where: {
+          updatedAt: {
+            lt: authActionRateLimitCutoff,
+          },
+          OR: [
+            { lockedUntil: null },
+            {
+              lockedUntil: {
+                lt: now,
+              },
+            },
+          ],
+        },
+      }),
       prisma.refreshRotation.updateMany({
         where: {
           idempotencyExpiresAt: {
@@ -96,6 +116,7 @@ export async function cleanupExpiredTokens() {
     refreshTokens: refreshTokens.count,
     loginAttempts: loginAttempts.count,
     loginLocks: loginLocks.count,
+    authActionRateLimits: authActionRateLimits.count,
     refreshIdempotencyResponses:
       refreshIdempotencyResponses.count,
   };

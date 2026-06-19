@@ -37,6 +37,24 @@ import type { LoginInput } from "./auth.schema";
 import type { AuthContextInput } from "./auth.types";
 
 const REFRESH_IDEMPOTENCY_VALUE_PREFIX = "enc:v1:";
+const UNKNOWN_CONTEXT_VALUE = "unknown";
+
+function normalizeSessionContextValue(
+  value: string | null | undefined,
+  maxLength: number
+) {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return UNKNOWN_CONTEXT_VALUE;
+  }
+
+  return normalized.slice(0, maxLength);
+}
+
+function hasStrictRefreshContext(value: string | null | undefined) {
+  return Boolean(value && value !== UNKNOWN_CONTEXT_VALUE);
+}
 
 async function revokeTokenFamily(
   familyId: string,
@@ -85,15 +103,19 @@ function isSameRefreshContext(
   },
   context: AuthContextInput
 ) {
-  if (session.userAgent && session.userAgent !== context.userAgent) {
+  if (
+    !hasStrictRefreshContext(session.userAgent) ||
+    !hasStrictRefreshContext(session.ipAddress) ||
+    !hasStrictRefreshContext(context.userAgent) ||
+    !hasStrictRefreshContext(context.ipAddress)
+  ) {
     return false;
   }
 
-  if (session.ipAddress && session.ipAddress !== context.ipAddress) {
-    return false;
-  }
-
-  return true;
+  return (
+    session.userAgent === context.userAgent &&
+    session.ipAddress === context.ipAddress
+  );
 }
 
 function refreshContextHash(context: AuthContextInput) {
@@ -106,13 +128,13 @@ function refreshContextHash(context: AuthContextInput) {
 }
 
 function normalizeDeviceName(userAgent?: string | null) {
-  const normalized = userAgent?.trim();
+  const normalized = normalizeSessionContextValue(userAgent, 120);
 
-  if (!normalized) {
+  if (normalized === UNKNOWN_CONTEXT_VALUE) {
     return null;
   }
 
-  return normalized.slice(0, 120);
+  return normalized;
 }
 
 function sessionDeviceFingerprintHash(context: AuthContextInput) {
@@ -529,13 +551,25 @@ export async function loginUser(
 
   const refreshToken = await createRefreshTokenRecord();
   const now = new Date();
+  const sessionUserAgent = normalizeSessionContextValue(
+    context.userAgent,
+    512
+  );
+  const sessionIpAddress = normalizeSessionContextValue(
+    context.ipAddress,
+    128
+  );
   const session = await createSessionWithRefreshToken({
     userId: user.id,
-    userAgent: context.userAgent,
-    ipAddress: context.ipAddress,
+    userAgent: sessionUserAgent,
+    ipAddress: sessionIpAddress,
     lastUsedAt: now,
-    deviceName: normalizeDeviceName(context.userAgent),
-    deviceFingerprintHash: sessionDeviceFingerprintHash(context),
+    deviceName: normalizeDeviceName(sessionUserAgent),
+    deviceFingerprintHash: sessionDeviceFingerprintHash({
+      ...context,
+      userAgent: sessionUserAgent,
+      ipAddress: sessionIpAddress,
+    }),
     expiresAt: refreshToken.record.expiresAt,
     refreshTokenRecord: refreshToken.record,
   });

@@ -14,10 +14,15 @@ import {
   SCRUBBED_EMAIL_BODY,
 } from "../../lib/email";
 import { prisma } from "../../lib/prisma";
+import { cleanupExpiredTokens } from "../../jobs/cleanupTokens";
 import { runStoreOrganizationBackfill } from "../../jobs/backfillStoreOrganizations";
 import { runTenantPreflight } from "../../jobs/preflightTenantMigration";
 import { hashPassword } from "../../utils/hash";
-import { loginUser } from "./auth.service";
+import {
+  loginUser,
+  refreshSession,
+  requestPasswordReset,
+} from "./auth.service";
 
 function getCookieHeader(setCookie: string | string[] | undefined) {
   if (!setCookie) {
@@ -114,6 +119,17 @@ test("auth routes register, verify, login and return /me", async (t) => {
     });
 
     assert.equal(loginResponse.statusCode, 200);
+    const loginSetCookie = loginResponse.headers["set-cookie"];
+    const refreshSetCookie = Array.isArray(loginSetCookie)
+      ? loginSetCookie.find((cookie) =>
+          cookie.startsWith("refreshToken=")
+        )
+      : loginSetCookie;
+
+    assert.equal(typeof refreshSetCookie, "string");
+    assert.match(refreshSetCookie ?? "", /HttpOnly/i);
+    assert.match(refreshSetCookie ?? "", /SameSite=Strict/i);
+    assert.match(refreshSetCookie ?? "", /Path=\/api\/auth/i);
 
     const accessToken = loginResponse.json().data.accessToken;
     const meResponse = await app.inject({
@@ -491,6 +507,96 @@ test("concurrent refresh requests are idempotent", async (t) => {
   }
 });
 
+test("refresh grace is denied when historical session context is incomplete", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const email = `refresh-context-${Date.now()}@example.com`;
+  const password = "StrongPass1!";
+
+  try {
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+
+    await prisma.user.create({
+      data: {
+        firstName: "Refresh",
+        lastName: "Context",
+        email,
+        password: await hashPassword(password),
+        emailVerifiedAt: new Date(),
+      },
+    });
+
+    const login = await loginUser({
+      email,
+      password,
+    });
+
+    await refreshSession(login.refreshToken, {
+      ipAddress: "203.0.113.10",
+      userAgent: "strict-refresh-test",
+    });
+
+    await assert.rejects(
+      () =>
+        refreshSession(login.refreshToken, {
+          ipAddress: "203.0.113.10",
+          userAgent: "strict-refresh-test",
+        }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "AUTH_REFRESH_TOKEN_REUSED"
+    );
+  } finally {
+    await prisma.user.deleteMany({
+      where: { email },
+    });
+    await prisma.$disconnect();
+  }
+});
+
+test("forgot password durable action limit blocks repeated email attempts", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const email = `forgot-limit-${Date.now()}@example.com`;
+
+  try {
+    await prisma.authActionRateLimit.deleteMany({
+      where: {
+        identityKey: email,
+      },
+    });
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const result = await requestPasswordReset({ email });
+      assert.equal(result.resetToken, null);
+    }
+
+    await assert.rejects(
+      () => requestPasswordReset({ email }),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "RATE_LIMIT_EXCEEDED"
+    );
+  } finally {
+    await prisma.authActionRateLimit.deleteMany({
+      where: {
+        identityKey: email,
+      },
+    });
+    await prisma.$disconnect();
+  }
+});
+
 test("login lock blocks repeated invalid credentials and resets after success", async (t) => {
   if (process.env.RUN_DB_TESTS !== "true") {
     t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
@@ -787,6 +893,190 @@ test("email outbox does not blindly retry sent_unknown rows", async (t) => {
     await prisma.emailOutbox.deleteMany({
       where: { to },
     });
+    await prisma.$disconnect();
+  }
+});
+
+test("token cleanup expires sessions and removes stale auth state", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const email = `cleanup-${Date.now()}@example.com`;
+  const now = new Date();
+  const staleDate = new Date(now.getTime() - 100 * 24 * 60 * 60 * 1000);
+  let userId: string | null = null;
+  let sessionId: string | null = null;
+  let authActionLimitId: string | null = null;
+  const authTokenHash = `cleanup-auth-token-${Date.now()}`;
+  const rotationPreviousId = `cleanup-prev-${Date.now()}`;
+
+  try {
+    const user = await prisma.user.create({
+      data: {
+        firstName: "Cleanup",
+        lastName: "Tester",
+        email,
+        password: await hashPassword("StrongPass1!"),
+        emailVerifiedAt: now,
+      },
+    });
+    userId = user.id;
+
+    const session = await prisma.session.create({
+      data: {
+        userId: user.id,
+        status: "ACTIVE",
+        expiresAt: new Date(now.getTime() - 60 * 1000),
+      },
+    });
+    sessionId = session.id;
+
+    await prisma.authToken.create({
+      data: {
+        tokenHash: authTokenHash,
+        purpose: "PASSWORD_RESET",
+        userId: user.id,
+        expiresAt: new Date(now.getTime() - 60 * 1000),
+      },
+    });
+
+    const rateLimit = await prisma.authActionRateLimit.create({
+      data: {
+        action: "FORGOT_PASSWORD",
+        identityKey: email,
+        attempts: 10,
+        windowStartedAt: staleDate,
+        lockedUntil: staleDate,
+        updatedAt: staleDate,
+      },
+    });
+    authActionLimitId = rateLimit.id;
+
+    await prisma.refreshRotation.create({
+      data: {
+        previousRefreshTokenId: rotationPreviousId,
+        rotatedRefreshTokenId: `cleanup-next-${Date.now()}`,
+        sessionId: session.id,
+        familyId: `cleanup-family-${Date.now()}`,
+        contextHash: "cleanup-context",
+        responseRefreshToken: "encrypted-refresh-token",
+        idempotencyExpiresAt: new Date(now.getTime() - 60 * 1000),
+      },
+    });
+
+    const result = await cleanupExpiredTokens();
+
+    assert.equal(result.expiredSessions >= 1, true);
+    assert.equal(result.authTokens >= 1, true);
+    assert.equal(result.authActionRateLimits >= 1, true);
+    assert.equal(result.refreshIdempotencyResponses >= 1, true);
+
+    const expiredSession = await prisma.session.findUniqueOrThrow({
+      where: { id: session.id },
+    });
+    const deletedAuthToken = await prisma.authToken.findUnique({
+      where: { tokenHash: authTokenHash },
+    });
+    const deletedRateLimit =
+      await prisma.authActionRateLimit.findUnique({
+        where: { id: rateLimit.id },
+      });
+    const scrubbedRotation =
+      await prisma.refreshRotation.findUniqueOrThrow({
+        where: { previousRefreshTokenId: rotationPreviousId },
+      });
+
+    assert.equal(expiredSession.status, "EXPIRED");
+    assert.equal(expiredSession.terminatedReason, "SESSION_EXPIRED");
+    assert.equal(deletedAuthToken, null);
+    assert.equal(deletedRateLimit, null);
+    assert.equal(scrubbedRotation.responseRefreshToken, null);
+  } finally {
+    await prisma.refreshRotation.deleteMany({
+      where: { previousRefreshTokenId: rotationPreviousId },
+    });
+    if (authActionLimitId) {
+      await prisma.authActionRateLimit.deleteMany({
+        where: { id: authActionLimitId },
+      });
+    }
+    if (sessionId) {
+      await prisma.session.deleteMany({
+        where: { id: sessionId },
+      });
+    }
+    if (userId) {
+      await prisma.user.deleteMany({
+        where: { id: userId },
+      });
+    }
+    await prisma.$disconnect();
+  }
+});
+
+test("ApiKey owner XOR constraint rejects ambiguous ownership", async (t) => {
+  if (process.env.RUN_DB_TESTS !== "true") {
+    t.skip("Set RUN_DB_TESTS=true with a test DATABASE_URL");
+    return;
+  }
+
+  const suffix = Date.now();
+  const email = `apikey-xor-${suffix}@example.com`;
+  let userId: string | null = null;
+  let organizationId: string | null = null;
+
+  try {
+    const user = await prisma.user.create({
+      data: {
+        firstName: "Api",
+        lastName: "Key",
+        email,
+        password: await hashPassword("StrongPass1!"),
+        emailVerifiedAt: new Date(),
+      },
+    });
+    userId = user.id;
+
+    const organization = await prisma.organization.create({
+      data: {
+        name: "ApiKey XOR Organization",
+        code: `APIKEY_XOR_${suffix}`,
+      },
+    });
+    organizationId = organization.id;
+
+    await assert.rejects(() =>
+      prisma.apiKey.create({
+        data: {
+          userId: user.id,
+          organizationId: organization.id,
+          name: "Ambiguous key",
+          keyHash: `ambiguous-${suffix}`,
+          keyPrefix: "ambiguous",
+        },
+      })
+    );
+  } finally {
+    await prisma.apiKey.deleteMany({
+      where: {
+        OR: [
+          { userId: userId ?? undefined },
+          { organizationId: organizationId ?? undefined },
+        ],
+      },
+    });
+    if (organizationId) {
+      await prisma.organization.deleteMany({
+        where: { id: organizationId },
+      });
+    }
+    if (userId) {
+      await prisma.user.deleteMany({
+        where: { id: userId },
+      });
+    }
     await prisma.$disconnect();
   }
 });

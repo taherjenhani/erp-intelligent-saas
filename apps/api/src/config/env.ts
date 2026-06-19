@@ -200,6 +200,21 @@ const envSchema = z
       .default(5),
     AUTH_RATE_LIMIT_MAX: z.coerce.number().default(5),
     AUTH_RATE_LIMIT_WINDOW: z.string().default("15 minutes"),
+    AUTH_FORGOT_PASSWORD_MAX_PER_HOUR: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5),
+    AUTH_RESEND_VERIFICATION_MAX_PER_HOUR: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3),
+    AUTH_REGISTER_MAX_PER_HOUR_PER_IP: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(10),
     RATE_LIMIT_REDIS_URL: z.string().url().optional(),
     TRUST_PROXY: booleanFromEnv.default(false),
     REFRESH_TOKEN_REUSE_GRACE_MS: z.coerce

@@ -67,6 +67,12 @@ enum LoginLockIdentityType {
   IP
 }
 
+enum AuthActionRateLimitAction {
+  FORGOT_PASSWORD
+  RESEND_VERIFICATION
+  REGISTER_IP
+}
+
 enum SecurityEventType {
   REGISTER
   LOGIN_SUCCESS
@@ -532,6 +538,24 @@ model LoginLock {
   @@unique([identityType, identityKey])
   @@index([lockedUntil])
   @@index([identityType, lockedUntil])
+}
+
+model AuthActionRateLimit {
+  id String @id @default(cuid())
+
+  action      AuthActionRateLimitAction
+  identityKey String
+
+  attempts        Int       @default(0)
+  windowStartedAt DateTime  @default(now())
+  lockedUntil     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([action, identityKey])
+  @@index([action, windowStartedAt])
+  @@index([lockedUntil])
 }
 
 model EmailOutbox {

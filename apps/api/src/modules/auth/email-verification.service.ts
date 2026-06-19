@@ -6,6 +6,7 @@ import {
 import { reportOperationalError } from "../../lib/operationalErrors";
 import { prisma } from "../../lib/prisma";
 import { writeAuthAudit } from "./auth-audit.service";
+import { assertResendVerificationActionAllowed } from "./auth-action-rate-limit.service";
 import { consumeAuthToken, createAuthToken } from "./auth-token.service";
 import type {
   ResendEmailVerificationInput,
@@ -45,6 +46,9 @@ export async function resendEmailVerification(
   context: AuthContextInput = {}
 ) {
   const email = data.email.trim().toLowerCase();
+
+  await assertResendVerificationActionAllowed(email);
+
   const user = await prisma.user.findUnique({
     where: {
       email,
