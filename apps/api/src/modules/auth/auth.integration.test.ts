@@ -54,6 +54,7 @@ test("auth routes register, verify, login and return /me", async (t) => {
   const app = buildApp();
   const email = `auth-${Date.now()}@example.com`;
   const password = "StrongPass1!";
+  const userAgent = "auth-integration-test";
 
   try {
     await prisma.user.deleteMany({
@@ -104,6 +105,7 @@ test("auth routes register, verify, login and return /me", async (t) => {
       headers: {
         cookie: loginCsrf.cookie,
         "x-csrf-token": loginCsrf.csrfToken,
+        "user-agent": userAgent,
       },
       payload: {
         email,
@@ -125,6 +127,26 @@ test("auth routes register, verify, login and return /me", async (t) => {
     assert.equal(meResponse.statusCode, 200);
     assert.equal(meResponse.json().data.email, email);
 
+    const activeSession = await prisma.session.findFirstOrThrow({
+      where: {
+        user: {
+          email,
+        },
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    });
+
+    assert.equal(activeSession.status, "ACTIVE");
+    assert.equal(activeSession.deviceName, userAgent);
+    assert.match(
+      activeSession.deviceFingerprintHash ?? "",
+      /^[a-f0-9]{64}$/
+    );
+    assert.equal(activeSession.lastUsedAt instanceof Date, true);
+    assert.equal(activeSession.terminatedReason, null);
+
     const loginSecurityEvent = await prisma.securityEvent.findFirst({
       where: {
         type: "LOGIN_SUCCESS",
@@ -135,6 +157,38 @@ test("auth routes register, verify, login and return /me", async (t) => {
     });
 
     assert.equal(Boolean(loginSecurityEvent), true);
+
+    const refreshCookie = getCookieHeader(
+      loginResponse.headers["set-cookie"]
+    );
+    const logoutCsrf = await getCsrf(app);
+    const logoutCookie = [refreshCookie, logoutCsrf.cookie]
+      .filter(Boolean)
+      .join("; ");
+    const logoutResponse = await app.inject({
+      method: "POST",
+      url: "/api/auth/logout",
+      headers: {
+        cookie: logoutCookie,
+        "x-csrf-token": logoutCsrf.csrfToken,
+        "user-agent": userAgent,
+      },
+    });
+
+    assert.equal(logoutResponse.statusCode, 200);
+
+    const loggedOutSession =
+      await prisma.session.findUniqueOrThrow({
+        where: {
+          id: activeSession.id,
+        },
+      });
+
+    assert.equal(loggedOutSession.status, "REVOKED");
+    assert.equal(loggedOutSession.terminatedReason, "LOGOUT");
+    assert.equal(loggedOutSession.terminatedBy, activeSession.userId);
+    assert.equal(loggedOutSession.terminatedAt instanceof Date, true);
+    assert.equal(loggedOutSession.revokedAt instanceof Date, true);
   } finally {
     await prisma.emailOutbox.deleteMany({
       where: { to: email },

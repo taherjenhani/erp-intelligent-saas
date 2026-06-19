@@ -17,6 +17,7 @@ export async function cleanupExpiredTokens() {
   );
 
   const [
+    expiredSessions,
     authTokens,
     refreshTokens,
     loginAttempts,
@@ -24,6 +25,20 @@ export async function cleanupExpiredTokens() {
     refreshIdempotencyResponses,
   ] =
     await prisma.$transaction([
+      prisma.session.updateMany({
+        where: {
+          status: "ACTIVE",
+          expiresAt: {
+            lt: now,
+          },
+        },
+        data: {
+          status: "EXPIRED",
+          terminatedAt: now,
+          terminatedBy: "system",
+          terminatedReason: "SESSION_EXPIRED",
+        },
+      }),
       prisma.authToken.deleteMany({
         where: {
           expiresAt: {
@@ -76,6 +91,7 @@ export async function cleanupExpiredTokens() {
     ]);
 
   return {
+    expiredSessions: expiredSessions.count,
     authTokens: authTokens.count,
     refreshTokens: refreshTokens.count,
     loginAttempts: loginAttempts.count,

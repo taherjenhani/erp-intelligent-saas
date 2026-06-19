@@ -137,6 +137,8 @@ export async function resetPassword(
         userId: validToken.userId,
         password,
         passwordPepperKeyId: activePasswordPepperKeyId(),
+        terminatedBy: validToken.userId,
+        terminatedReason: "PASSWORD_RESET",
       },
       tx
     );
@@ -192,6 +194,8 @@ export async function changePassword(
         password,
         passwordPepperKeyId: activePasswordPepperKeyId(),
         keepSessionId: currentSessionId,
+        terminatedBy: user.id,
+        terminatedReason: "PASSWORD_CHANGED",
       },
       tx
     );

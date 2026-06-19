@@ -24,6 +24,16 @@ enum SessionStatus {
   EXPIRED
 }
 
+enum SessionTerminationReason {
+  LOGOUT
+  LOGOUT_ALL
+  PASSWORD_RESET
+  PASSWORD_CHANGED
+  REFRESH_TOKEN_REUSE
+  SESSION_EXPIRED
+  ADMIN_REVOKED
+}
+
 enum AuditAction {
   REGISTER
   LOGIN_SUCCESS
@@ -265,11 +275,17 @@ model Session {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  status SessionStatus @default(ACTIVE)
-  revokedAt DateTime?
+  status            SessionStatus             @default(ACTIVE)
+  revokedAt         DateTime?
+  lastUsedAt        DateTime?
+  terminatedAt      DateTime?
+  terminatedBy      String?
+  terminatedReason  SessionTerminationReason?
 
-  userAgent String?
-  ipAddress String?
+  userAgent             String?
+  ipAddress             String?
+  deviceName            String?
+  deviceFingerprintHash String?
 
   refreshTokens RefreshToken[]
 
@@ -280,6 +296,9 @@ model Session {
   @@index([userId])
   @@index([status])
   @@index([revokedAt])
+  @@index([lastUsedAt])
+  @@index([terminatedAt])
+  @@index([deviceFingerprintHash])
 }
 
 model RefreshToken {

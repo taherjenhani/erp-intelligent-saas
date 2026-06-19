@@ -118,6 +118,7 @@ Set `NODE_ENV=test` and `RUN_DB_TESTS=true`. `npm run test:integration` and `npm
 - Email outbox encryption keys are env-managed. Move to KMS/Vault before enterprise production with strict key custody requirements.
 - Configure `EMAIL_OUTBOX_LOCK_HEARTBEAT_MS` and `EMAIL_PROVIDER_TIMEOUT_MS` lower than `EMAIL_OUTBOX_LOCK_TIMEOUT_MS` so slow deliveries do not get recovered by another worker.
 - Enable `TOKEN_CLEANUP_WORKER_ENABLED=true` or schedule `npm run tokens:cleanup` externally and set `TOKEN_CLEANUP_EXTERNAL_SCHEDULED=true`.
+- Session lifecycle audit is explicit: login sets `lastUsedAt`, `deviceName`, and `deviceFingerprintHash`; logout, logout-all, password reset/change, refresh-token reuse, and cleanup expiry set `terminatedAt`, `terminatedBy`, and `terminatedReason`.
 - API key and MFA tables are schema foundations only. Do not expose endpoints until rotation, recovery, lockout, audit, rate-limit and UX policies are defined.
 - Keep `API_KEY_ENDPOINTS_ENABLED=false` and `MFA_ENDPOINTS_ENABLED=false` until the policy is approved. If a future release needs them, startup requires `AUTH_ENTERPRISE_FEATURES_POLICY_ACK=rotation-recovery-audit-rate-limit-approved`.
 - For RS256 deployments, keep current and previous public keys in `JWT_PUBLIC_KEYS`, sign only with `JWT_KEY_ID`, and verify external validators against `GET /.well-known/jwks.json` before rotating out old keys.
