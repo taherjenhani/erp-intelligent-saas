@@ -4,6 +4,7 @@ import type { FastifyReply, FastifyRequest } from "fastify";
 import { writeAuditLog } from "../lib/audit";
 import { PermissionError, ValidationError } from "../lib/errors";
 import { prisma } from "../lib/prisma";
+import { requireAuth } from "./auth.middleware";
 
 type DeniedAuditWriter = typeof writeAuditLog;
 
@@ -568,4 +569,47 @@ export function assertStoreBelongsToOrganization(
       );
     }
   };
+}
+
+export function withOrgAccess(
+  organizationIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  return [
+    requireAuth,
+    requireOrganizationPermission(
+      organizationIdParam,
+      permissionKey,
+      options
+    ),
+  ];
+}
+
+export function withStoreAccess(
+  storeIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  return [
+    requireAuth,
+    requireStorePermission(storeIdParam, permissionKey, options),
+  ];
+}
+
+export function withStoreOrgAccess(
+  storeIdParam: string,
+  organizationIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  return [
+    requireAuth,
+    assertStoreBelongsToOrganization(
+      storeIdParam,
+      organizationIdParam,
+      options
+    ),
+    requireStorePermission(storeIdParam, permissionKey, options),
+  ];
 }

@@ -13,6 +13,7 @@ import {
 } from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
 import { assertForgotPasswordActionAllowed } from "./auth-action-rate-limit.service";
+import { applyAuthResponseJitter } from "./auth-response-jitter.service";
 import {
   findPasswordResetUser,
   findUserPasswordById,
@@ -45,6 +46,8 @@ export async function requestPasswordReset(
   const user = await findPasswordResetUser(email);
 
   if (!user || !user.isActive) {
+    await applyAuthResponseJitter();
+
     return {
       resetToken: null,
     };

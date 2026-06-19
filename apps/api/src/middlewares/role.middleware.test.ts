@@ -14,6 +14,9 @@ import {
   requireStorePermission,
   type RoleAccess,
   type RoleGuardOptions,
+  withOrgAccess,
+  withStoreAccess,
+  withStoreOrgAccess,
 } from "./role.middleware";
 
 const reply = {} as FastifyReply;
@@ -170,4 +173,17 @@ test("requireOrganizationPermission checks tenant role permissions", async () =>
   );
 
   await guard(request(baseAuth, { organizationId: "org-1" }), reply);
+});
+
+test("route access builders compose auth and tenant guards", () => {
+  assert.equal(
+    withOrgAccess("organizationId", "users.write").length,
+    2
+  );
+  assert.equal(withStoreAccess("storeId", "stores.write").length, 2);
+  assert.equal(
+    withStoreOrgAccess("storeId", "organizationId", "stores.write")
+      .length,
+    3
+  );
 });

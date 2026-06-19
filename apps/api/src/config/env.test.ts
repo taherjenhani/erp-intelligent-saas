@@ -399,6 +399,46 @@ test("parseEnv limits refresh idempotency replay TTL", () => {
   );
 });
 
+test("parseEnv accepts per-purpose auth token TTLs", () => {
+  const parsed = parseEnv({
+    ...requiredEnv,
+    EMAIL_VERIFICATION_TOKEN_TTL_MS: String(24 * 60 * 60 * 1000),
+    PASSWORD_RESET_TOKEN_TTL_MS: String(15 * 60 * 1000),
+  });
+
+  assert.equal(
+    parsed.EMAIL_VERIFICATION_TOKEN_TTL_MS,
+    24 * 60 * 60 * 1000
+  );
+  assert.equal(parsed.PASSWORD_RESET_TOKEN_TTL_MS, 15 * 60 * 1000);
+});
+
+test("parseEnv validates auth response jitter bounds", () => {
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      AUTH_RESPONSE_JITTER_MIN_MS: "200",
+      AUTH_RESPONSE_JITTER_MAX_MS: "100",
+    })
+  );
+
+  assert.throws(() =>
+    parseEnv({
+      ...requiredEnv,
+      AUTH_RESPONSE_JITTER_MAX_MS: "3000",
+    })
+  );
+
+  const parsed = parseEnv({
+    ...requiredEnv,
+    AUTH_RESPONSE_JITTER_MIN_MS: "25",
+    AUTH_RESPONSE_JITTER_MAX_MS: "125",
+  });
+
+  assert.equal(parsed.AUTH_RESPONSE_JITTER_MIN_MS, 25);
+  assert.equal(parsed.AUTH_RESPONSE_JITTER_MAX_MS, 125);
+});
+
 test("parseEnv requires explicit SMTP best-effort opt-in in production", () => {
   assert.throws(() =>
     parseEnv({

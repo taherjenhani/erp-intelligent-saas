@@ -215,6 +215,26 @@ const envSchema = z
       .int()
       .positive()
       .default(10),
+    AUTH_RESPONSE_JITTER_MIN_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(0),
+    AUTH_RESPONSE_JITTER_MAX_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(0),
+    EMAIL_VERIFICATION_TOKEN_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(24 * 60 * 60 * 1000),
+    PASSWORD_RESET_TOKEN_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30 * 60 * 1000),
     RATE_LIMIT_REDIS_URL: z.string().url().optional(),
     TRUST_PROXY: booleanFromEnv.default(false),
     REFRESH_TOKEN_REUSE_GRACE_MS: z.coerce
@@ -369,6 +389,24 @@ const envSchema = z
         path: ["TOKEN_HASH_SECRET"],
         message:
           "TOKEN_HASH_SECRET must be different from PASSWORD_PEPPER",
+      });
+    }
+
+    if (env.AUTH_RESPONSE_JITTER_MAX_MS < env.AUTH_RESPONSE_JITTER_MIN_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AUTH_RESPONSE_JITTER_MAX_MS"],
+        message:
+          "AUTH_RESPONSE_JITTER_MAX_MS must be greater than or equal to AUTH_RESPONSE_JITTER_MIN_MS",
+      });
+    }
+
+    if (env.AUTH_RESPONSE_JITTER_MAX_MS > 2000) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AUTH_RESPONSE_JITTER_MAX_MS"],
+        message:
+          "AUTH_RESPONSE_JITTER_MAX_MS must stay at or below 2000ms",
       });
     }
 
