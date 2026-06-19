@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import crypto from "crypto";
 
 import { env } from "./config/env";
+import { prisma } from "./lib/prisma";
 import { authRoutes } from "./modules/auth/auth.route";
 import emailOutboxWorkerPlugin from "./plugins/emailOutboxWorker";
 import errorHandlerPlugin from "./plugins/errorHandler";
@@ -50,6 +51,33 @@ export function buildApp() {
   app.get("/", async () => ({
     message: "ERP API running",
   }));
+
+  app.get("/healthz", async () => ({
+    status: "ok",
+    timestamp: new Date().toISOString(),
+  }));
+
+  app.get("/readyz", async (_request, reply) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+
+      return reply.status(200).send({
+        status: "ok",
+        checks: {
+          database: "ok",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      return reply.status(503).send({
+        status: "degraded",
+        checks: {
+          database: "fail",
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
 
   return app;
 }

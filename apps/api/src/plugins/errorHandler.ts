@@ -41,12 +41,28 @@ const errorHandlerPlugin: FastifyPluginAsync = async (app) => {
       typeof error === "object" &&
       error !== null &&
       "statusCode" in error &&
-      error.statusCode === 429
+      typeof error.statusCode === "number" &&
+      error.statusCode >= 400 &&
+      error.statusCode < 500
     ) {
-      return reply.status(429).send({
+      const statusCode = error.statusCode;
+      const message =
+        error instanceof Error ? error.message : "Request failed";
+      const normalizedMessage = message.toLowerCase();
+      const code =
+        statusCode === 429
+          ? "RATE_LIMIT_EXCEEDED"
+          : statusCode === 403 && normalizedMessage.includes("csrf")
+            ? "CSRF_INVALID"
+            : "REQUEST_FAILED";
+
+      return reply.status(statusCode).send({
         success: false,
-        code: "RATE_LIMIT_EXCEEDED",
-        message: "Too many requests, please try again later",
+        code,
+        message:
+          statusCode === 429
+            ? "Too many requests, please try again later"
+            : message,
         correlationId: request.correlationId,
       });
     }

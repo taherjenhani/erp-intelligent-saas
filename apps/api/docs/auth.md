@@ -31,6 +31,7 @@ prisma/migrations/20260610143000_auth_operational_hardening/migration.sql
 prisma/migrations/20260610160000_auth_enterprise_foundation/migration.sql
 prisma/migrations/20260610170000_refresh_idempotency_key/migration.sql
 prisma/migrations/20260610180000_auth_final_guardrails/migration.sql
+prisma/migrations/20260619133000_auth_action_rate_limit/migration.sql
 ```
 
 If the production database is empty, apply migrations normally:
@@ -50,6 +51,7 @@ npx prisma migrate resolve --applied 20260610143000_auth_operational_hardening
 npx prisma migrate resolve --applied 20260610160000_auth_enterprise_foundation
 npx prisma migrate resolve --applied 20260610170000_refresh_idempotency_key
 npx prisma migrate resolve --applied 20260610180000_auth_final_guardrails
+npx prisma migrate resolve --applied 20260619133000_auth_action_rate_limit
 npx prisma migrate deploy
 ```
 
@@ -77,10 +79,13 @@ npx prisma migrate diff --from-migrations prisma/migrations --to-schema prisma/s
 
 The auth module keeps route/controller code thin and moves stateful auth logic into focused services:
 
-- `session.service.ts`: login orchestration, refresh rotation and logout workflows.
+- `session.service.ts`: login orchestration and refresh rotation.
+- `logout.service.ts`: single-session and all-session logout workflows.
 - `login-lock.service.ts`: DB-backed `LoginAttempt` and `LoginLock` behavior.
 - `password.service.ts`: forgot/reset/change password workflows.
 - `email-verification.service.ts`: verification token and resend workflows.
+- `auth-token.service.ts`: verification/reset token policy and TTL selection.
+- `auth-token.repository.ts`: persistence primitives for verification/reset tokens.
 - `auth.repository.ts`: shared Prisma access for users, sessions, refresh tokens and password/session revocation.
 
 Refresh rotation remains inside `session.service.ts` because it is an atomic security workflow with several policy checks. New ERP modules should avoid direct Prisma access for auth-owned state and add repository helpers instead.
@@ -190,6 +195,22 @@ Rate limiting is configured for:
 
 `POST /api/auth/login` also requires CSRF because it creates a refresh-token cookie.
 Rate limiting uses Redis when `RATE_LIMIT_REDIS_URL` is configured. Production requires Redis so limits work across multiple API instances. Startup fails if Redis is configured but unavailable.
+Forgot-password, resend-verification, and register also use DB-backed durable counters so repeated abuse remains visible across API restarts:
+
+```env
+AUTH_FORGOT_PASSWORD_MAX_PER_HOUR=5
+AUTH_RESEND_VERIFICATION_MAX_PER_HOUR=3
+AUTH_REGISTER_MAX_PER_HOUR_PER_IP=10
+```
+
+For additional user-enumeration hardening on generic auth responses, enable bounded response jitter:
+
+```env
+AUTH_RESPONSE_JITTER_MIN_MS=25
+AUTH_RESPONSE_JITTER_MAX_MS=125
+```
+
+Keep jitter modest. It is a timing hardening control, not a substitute for generic responses, rate limiting, and audit.
 
 Login records append-only `LoginAttempt` rows and applies DB-backed `LoginLock` state by email/IP. Successful login resets the lock state for the email/IP identities:
 
@@ -354,6 +375,13 @@ npx prisma db seed
 - Refresh tokens are opaque random tokens stored as HMAC hashes.
 - Refresh/auth token hashes use `TOKEN_HASH_SECRET`; password hashing uses `PASSWORD_PEPPER`.
 - New password hashes store `passwordPepperKeyId` to support controlled pepper rotation.
+- Email verification and password reset opaque-token TTLs are configured separately:
+
+```env
+EMAIL_VERIFICATION_TOKEN_TTL_MS=86400000
+PASSWORD_RESET_TOKEN_TTL_MS=1800000
+```
+
 - Refresh token rotation is atomic and revokes the token family when reuse is detected outside the short concurrent refresh grace window.
 - Each normal refresh writes a `RefreshRotation` row for observability and controlled same-context replay handling.
 - Clients can send `Idempotency-Key` or `x-idempotency-key` on `POST /api/auth/refresh`. For the same old cookie, same context and same key, the API can replay the same rotated refresh cookie for `REFRESH_IDEMPOTENCY_TTL_MS`, default 60 seconds.
@@ -370,6 +398,7 @@ npx prisma db seed
 
 Use `requireStoreRole("storeId", ["MANAGER", "ADMIN"])` or `requireStorePermission("storeId", "stores.write")` on store-scoped routes.
 When a route contains both `organizationId` and `storeId`, add `requireStoreInOrganization("storeId", "organizationId")` before the permission guard.
+For new ERP routes, prefer the route builders `withOrgAccess`, `withStoreAccess`, or `withStoreOrgAccess` so `requireAuth` and tenant guards are composed consistently.
 RBAC guards are unit-tested through dependency injection for store permission, organization role/permission and store-organization boundary scenarios.
 
 ## Organization-Level RBAC

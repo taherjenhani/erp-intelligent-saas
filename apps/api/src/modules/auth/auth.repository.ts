@@ -1,4 +1,8 @@
-import { Prisma } from "@prisma/client";
+import {
+  Prisma,
+  type SessionStatus,
+  type SessionTerminationReason,
+} from "@prisma/client";
 
 import { prisma } from "../../lib/prisma";
 
@@ -34,6 +38,12 @@ const logoutRefreshTokenInclude = {
 export type RefreshTokenWithSession = Prisma.RefreshTokenGetPayload<{
   include: typeof refreshTokenSessionInclude;
 }>;
+
+type SessionTerminationInput = {
+  terminatedBy?: string | null;
+  terminatedReason: SessionTerminationReason;
+  sessionStatus?: SessionStatus;
+};
 
 export function findUserByEmail(email: string, client: PrismaClientLike = prisma) {
   return client.user.findUnique({
@@ -146,9 +156,13 @@ export async function updatePasswordAndRevokeOtherSessions(
     password: string;
     passwordPepperKeyId?: string | null;
     keepSessionId?: string;
+    terminatedBy: string;
+    terminatedReason: SessionTerminationReason;
   },
   client: PrismaClientLike = prisma
 ) {
+  const revokedAt = new Date();
+
   await client.user.update({
     where: {
       id: input.userId,
@@ -171,7 +185,10 @@ export async function updatePasswordAndRevokeOtherSessions(
     },
     data: {
       status: "REVOKED",
-      revokedAt: new Date(),
+      revokedAt,
+      terminatedAt: revokedAt,
+      terminatedBy: input.terminatedBy,
+      terminatedReason: input.terminatedReason,
     },
   });
 
@@ -188,7 +205,7 @@ export async function updatePasswordAndRevokeOtherSessions(
       revokedAt: null,
     },
     data: {
-      revokedAt: new Date(),
+      revokedAt,
     },
   });
 }
@@ -219,6 +236,9 @@ export function createSessionWithRefreshToken(
     userId: string;
     userAgent?: string | null;
     ipAddress?: string | null;
+    lastUsedAt?: Date;
+    deviceName?: string | null;
+    deviceFingerprintHash?: string | null;
     expiresAt: Date;
     refreshTokenRecord: Prisma.RefreshTokenCreateWithoutSessionInput;
   },
@@ -229,6 +249,9 @@ export function createSessionWithRefreshToken(
       userId: input.userId,
       userAgent: input.userAgent,
       ipAddress: input.ipAddress,
+      lastUsedAt: input.lastUsedAt,
+      deviceName: input.deviceName,
+      deviceFingerprintHash: input.deviceFingerprintHash,
       expiresAt: input.expiresAt,
       refreshTokens: {
         create: input.refreshTokenRecord,
@@ -305,16 +328,18 @@ export async function revokeRefreshTokenFamilyAndSession(
   input: {
     familyId: string;
     sessionId: string;
-  },
+  } & SessionTerminationInput,
   client: PrismaClientLike = prisma
 ) {
+  const revokedAt = new Date();
+
   await client.refreshToken.updateMany({
     where: {
       familyId: input.familyId,
       revokedAt: null,
     },
     data: {
-      revokedAt: new Date(),
+      revokedAt,
     },
   });
 
@@ -323,8 +348,12 @@ export async function revokeRefreshTokenFamilyAndSession(
       id: input.sessionId,
     },
     data: {
-      status: "REVOKED",
-      revokedAt: new Date(),
+      status: input.sessionStatus ?? "REVOKED",
+      revokedAt:
+        input.sessionStatus === "EXPIRED" ? undefined : revokedAt,
+      terminatedAt: revokedAt,
+      terminatedBy: input.terminatedBy,
+      terminatedReason: input.terminatedReason,
     },
   });
 }
@@ -333,15 +362,17 @@ export async function revokeSessionByRefreshToken(
   input: {
     refreshTokenId: string;
     sessionId: string;
-  },
+  } & SessionTerminationInput,
   client: PrismaClientLike = prisma
 ) {
+  const revokedAt = new Date();
+
   await client.refreshToken.update({
     where: {
       id: input.refreshTokenId,
     },
     data: {
-      revokedAt: new Date(),
+      revokedAt,
     },
   });
 
@@ -351,15 +382,24 @@ export async function revokeSessionByRefreshToken(
     },
     data: {
       status: "REVOKED",
-      revokedAt: new Date(),
+      revokedAt,
+      terminatedAt: revokedAt,
+      terminatedBy: input.terminatedBy,
+      terminatedReason: input.terminatedReason,
     },
   });
 }
 
 export async function revokeAllActiveUserSessionsAndTokens(
   userId: string,
-  client: PrismaClientLike = prisma
+  client: PrismaClientLike = prisma,
+  options: SessionTerminationInput = {
+    terminatedBy: userId,
+    terminatedReason: "LOGOUT_ALL",
+  }
 ) {
+  const revokedAt = new Date();
+
   await client.session.updateMany({
     where: {
       userId,
@@ -367,7 +407,10 @@ export async function revokeAllActiveUserSessionsAndTokens(
     },
     data: {
       status: "REVOKED",
-      revokedAt: new Date(),
+      revokedAt,
+      terminatedAt: revokedAt,
+      terminatedBy: options.terminatedBy,
+      terminatedReason: options.terminatedReason,
     },
   });
 
@@ -379,7 +422,7 @@ export async function revokeAllActiveUserSessionsAndTokens(
       revokedAt: null,
     },
     data: {
-      revokedAt: new Date(),
+      revokedAt,
     },
   });
 }

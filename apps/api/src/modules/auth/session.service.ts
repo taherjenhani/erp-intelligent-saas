@@ -1,4 +1,8 @@
 import crypto from "crypto";
+import type {
+  SessionStatus,
+  SessionTerminationReason,
+} from "@prisma/client";
 
 import { env } from "../../config/env";
 import { AuthError } from "../../lib/errors";
@@ -15,14 +19,11 @@ import { toPublicUser } from "./auth.mapper";
 import {
   createSessionWithRefreshToken,
   findLoginUserByEmail,
-  findLogoutRefreshTokenByHashes,
   findRefreshRotationReplay,
   findRefreshTokenByHashesWithSession,
   findRefreshTokenByIdWithSession,
   type RefreshTokenWithSession,
-  revokeAllActiveUserSessionsAndTokens,
   revokeRefreshTokenFamilyAndSession,
-  revokeSessionByRefreshToken,
   updateUserPasswordHashIfCurrent,
 } from "./auth.repository";
 import {
@@ -33,13 +34,39 @@ import type { LoginInput } from "./auth.schema";
 import type { AuthContextInput } from "./auth.types";
 
 const REFRESH_IDEMPOTENCY_VALUE_PREFIX = "enc:v1:";
+const UNKNOWN_CONTEXT_VALUE = "unknown";
 
-async function revokeTokenFamily(familyId: string, sessionId: string) {
+function normalizeSessionContextValue(
+  value: string | null | undefined,
+  maxLength: number
+) {
+  const normalized = value?.trim();
+
+  if (!normalized) {
+    return UNKNOWN_CONTEXT_VALUE;
+  }
+
+  return normalized.slice(0, maxLength);
+}
+
+function hasStrictRefreshContext(value: string | null | undefined) {
+  return Boolean(value && value !== UNKNOWN_CONTEXT_VALUE);
+}
+
+async function revokeTokenFamily(
+  familyId: string,
+  sessionId: string,
+  terminatedReason: SessionTerminationReason,
+  sessionStatus?: SessionStatus
+) {
   await prisma.$transaction((tx) =>
     revokeRefreshTokenFamilyAndSession(
       {
         familyId,
         sessionId,
+        terminatedBy: "system",
+        terminatedReason,
+        sessionStatus,
       },
       tx
     )
@@ -73,15 +100,19 @@ function isSameRefreshContext(
   },
   context: AuthContextInput
 ) {
-  if (session.userAgent && session.userAgent !== context.userAgent) {
+  if (
+    !hasStrictRefreshContext(session.userAgent) ||
+    !hasStrictRefreshContext(session.ipAddress) ||
+    !hasStrictRefreshContext(context.userAgent) ||
+    !hasStrictRefreshContext(context.ipAddress)
+  ) {
     return false;
   }
 
-  if (session.ipAddress && session.ipAddress !== context.ipAddress) {
-    return false;
-  }
-
-  return true;
+  return (
+    session.userAgent === context.userAgent &&
+    session.ipAddress === context.ipAddress
+  );
 }
 
 function refreshContextHash(context: AuthContextInput) {
@@ -90,6 +121,34 @@ function refreshContextHash(context: AuthContextInput) {
     .update(context.userAgent ?? "")
     .update("\0")
     .update(context.ipAddress ?? "")
+    .digest("hex");
+}
+
+function normalizeDeviceName(userAgent?: string | null) {
+  const normalized = normalizeSessionContextValue(userAgent, 120);
+
+  if (normalized === UNKNOWN_CONTEXT_VALUE) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function sessionDeviceFingerprintHash(context: AuthContextInput) {
+  const userAgent = context.userAgent?.trim() ?? "";
+  const ipAddress = context.ipAddress?.trim() ?? "";
+
+  if (!userAgent && !ipAddress) {
+    return null;
+  }
+
+  return crypto
+    .createHash("sha256")
+    .update("session-device-v1")
+    .update("\0")
+    .update(userAgent)
+    .update("\0")
+    .update(ipAddress)
     .digest("hex");
 }
 
@@ -194,6 +253,16 @@ async function tryReplayRefreshIdempotencyResult(
   ) {
     return null;
   }
+
+  await prisma.session.updateMany({
+    where: {
+      id: activeRotatedToken.sessionId,
+      status: "ACTIVE",
+    },
+    data: {
+      lastUsedAt: now,
+    },
+  });
 
   await writeAuthAudit(
     "REFRESH_TOKEN",
@@ -323,13 +392,18 @@ async function createGraceRefreshResult(
       },
       data: {
         expiresAt: concurrentRefreshToken.record.expiresAt,
+        lastUsedAt: now,
       },
     });
   });
 
   if (!session) {
     await throwIfSameContextRefreshReplay(token.id, context, now);
-    await revokeTokenFamily(token.familyId, token.sessionId);
+    await revokeTokenFamily(
+      token.familyId,
+      token.sessionId,
+      "REFRESH_TOKEN_REUSE"
+    );
     await writeAuthAudit(
       "TOKEN_REUSE_DETECTED",
       context,
@@ -473,10 +547,26 @@ export async function loginUser(
   });
 
   const refreshToken = await createRefreshTokenRecord();
+  const now = new Date();
+  const sessionUserAgent = normalizeSessionContextValue(
+    context.userAgent,
+    512
+  );
+  const sessionIpAddress = normalizeSessionContextValue(
+    context.ipAddress,
+    128
+  );
   const session = await createSessionWithRefreshToken({
     userId: user.id,
-    userAgent: context.userAgent,
-    ipAddress: context.ipAddress,
+    userAgent: sessionUserAgent,
+    ipAddress: sessionIpAddress,
+    lastUsedAt: now,
+    deviceName: normalizeDeviceName(sessionUserAgent),
+    deviceFingerprintHash: sessionDeviceFingerprintHash({
+      ...context,
+      userAgent: sessionUserAgent,
+      ipAddress: sessionIpAddress,
+    }),
     expiresAt: refreshToken.record.expiresAt,
     refreshTokenRecord: refreshToken.record,
   });
@@ -538,7 +628,8 @@ export async function refreshSession(
 
     await revokeTokenFamily(
       matchedToken.familyId,
-      matchedToken.sessionId
+      matchedToken.sessionId,
+      "REFRESH_TOKEN_REUSE"
     );
     await writeAuthAudit(
       "TOKEN_REUSE_DETECTED",
@@ -558,7 +649,9 @@ export async function refreshSession(
   ) {
     await revokeTokenFamily(
       matchedToken.familyId,
-      matchedToken.sessionId
+      matchedToken.sessionId,
+      "SESSION_EXPIRED",
+      "EXPIRED"
     );
     throw new AuthError("AUTH_SESSION_EXPIRED", "Session expired");
   }
@@ -642,6 +735,7 @@ export async function refreshSession(
       },
       data: {
         expiresAt: newRefreshToken.record.expiresAt,
+        lastUsedAt: now,
       },
     });
   });
@@ -676,7 +770,8 @@ export async function refreshSession(
 
     await revokeTokenFamily(
       matchedToken.familyId,
-      matchedToken.sessionId
+      matchedToken.sessionId,
+      "REFRESH_TOKEN_REUSE"
     );
     await writeAuthAudit(
       "TOKEN_REUSE_DETECTED",
@@ -701,47 +796,4 @@ export async function refreshSession(
     session,
     user: toPublicUser(matchedToken.session.user),
   };
-}
-
-export async function logoutUser(
-  refreshToken: string,
-  context: AuthContextInput = {}
-) {
-  const refreshTokenHashes = await getTokenHashCandidates(refreshToken);
-  const matchedToken = await findLogoutRefreshTokenByHashes(
-    refreshTokenHashes
-  );
-
-  if (!matchedToken) {
-    return;
-  }
-
-  await prisma.$transaction((tx) =>
-    revokeSessionByRefreshToken(
-      {
-        refreshTokenId: matchedToken.id,
-        sessionId: matchedToken.sessionId,
-      },
-      tx
-    )
-  );
-
-  await writeAuthAudit(
-    "LOGOUT",
-    context,
-    matchedToken.session.userId
-  );
-}
-
-export async function logoutAllUserSessions(
-  userId: string,
-  context: AuthContextInput = {}
-) {
-  await prisma.$transaction((tx) =>
-    revokeAllActiveUserSessionsAndTokens(userId, tx)
-  );
-
-  await writeAuthAudit("LOGOUT", context, userId, {
-    allSessions: true,
-  });
 }

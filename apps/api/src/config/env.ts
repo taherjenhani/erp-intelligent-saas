@@ -200,6 +200,41 @@ const envSchema = z
       .default(5),
     AUTH_RATE_LIMIT_MAX: z.coerce.number().default(5),
     AUTH_RATE_LIMIT_WINDOW: z.string().default("15 minutes"),
+    AUTH_FORGOT_PASSWORD_MAX_PER_HOUR: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(5),
+    AUTH_RESEND_VERIFICATION_MAX_PER_HOUR: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(3),
+    AUTH_REGISTER_MAX_PER_HOUR_PER_IP: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(10),
+    AUTH_RESPONSE_JITTER_MIN_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(0),
+    AUTH_RESPONSE_JITTER_MAX_MS: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .default(0),
+    EMAIL_VERIFICATION_TOKEN_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(24 * 60 * 60 * 1000),
+    PASSWORD_RESET_TOKEN_TTL_MS: z.coerce
+      .number()
+      .int()
+      .positive()
+      .default(30 * 60 * 1000),
     RATE_LIMIT_REDIS_URL: z.string().url().optional(),
     TRUST_PROXY: booleanFromEnv.default(false),
     REFRESH_TOKEN_REUSE_GRACE_MS: z.coerce
@@ -313,6 +348,11 @@ const envSchema = z
     TOKEN_HASH_SECRET: z
       .string()
       .min(32, "TOKEN_HASH_SECRET must contain at least 32 characters"),
+    TOKEN_HASH_SECRET_KEY_ID: z
+      .string()
+      .regex(KEY_ID_PATTERN, "TOKEN_HASH_SECRET_KEY_ID is invalid")
+      .optional(),
+    TOKEN_HASH_SECRET_KEYS: z.string().optional(),
     REFRESH_IDEMPOTENCY_SECRET: z
       .string()
       .min(
@@ -349,6 +389,24 @@ const envSchema = z
         path: ["TOKEN_HASH_SECRET"],
         message:
           "TOKEN_HASH_SECRET must be different from PASSWORD_PEPPER",
+      });
+    }
+
+    if (env.AUTH_RESPONSE_JITTER_MAX_MS < env.AUTH_RESPONSE_JITTER_MIN_MS) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AUTH_RESPONSE_JITTER_MAX_MS"],
+        message:
+          "AUTH_RESPONSE_JITTER_MAX_MS must be greater than or equal to AUTH_RESPONSE_JITTER_MIN_MS",
+      });
+    }
+
+    if (env.AUTH_RESPONSE_JITTER_MAX_MS > 2000) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["AUTH_RESPONSE_JITTER_MAX_MS"],
+        message:
+          "AUTH_RESPONSE_JITTER_MAX_MS must stay at or below 2000ms",
       });
     }
 
@@ -596,6 +654,72 @@ const envSchema = z
       }
     }
 
+    const tokenHashKeyring = parseSecretKeyring(env.TOKEN_HASH_SECRET_KEYS);
+
+    if (tokenHashKeyring === null) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["TOKEN_HASH_SECRET_KEYS"],
+        message:
+          "TOKEN_HASH_SECRET_KEYS must be a JSON object of key ids to secrets",
+      });
+    } else {
+      for (const [keyId, secret] of Object.entries(tokenHashKeyring)) {
+        if (!KEY_ID_PATTERN.test(keyId)) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["TOKEN_HASH_SECRET_KEYS"],
+            message: `Invalid token hash key id: ${keyId}`,
+          });
+        }
+
+        if (typeof secret !== "string" || secret.length < 32) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["TOKEN_HASH_SECRET_KEYS"],
+            message:
+              "Every TOKEN_HASH_SECRET_KEYS secret must contain at least 32 characters",
+          });
+        }
+      }
+
+      if (env.TOKEN_HASH_SECRET_KEYS && !env.TOKEN_HASH_SECRET_KEY_ID) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TOKEN_HASH_SECRET_KEY_ID"],
+          message:
+            "TOKEN_HASH_SECRET_KEY_ID is required when TOKEN_HASH_SECRET_KEYS is set",
+        });
+      }
+
+      if (
+        env.TOKEN_HASH_SECRET_KEYS &&
+        env.TOKEN_HASH_SECRET_KEY_ID &&
+        !(env.TOKEN_HASH_SECRET_KEY_ID in tokenHashKeyring)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TOKEN_HASH_SECRET_KEY_ID"],
+          message:
+            "TOKEN_HASH_SECRET_KEY_ID must exist in TOKEN_HASH_SECRET_KEYS",
+        });
+      }
+
+      if (
+        env.TOKEN_HASH_SECRET_KEYS &&
+        env.TOKEN_HASH_SECRET_KEY_ID &&
+        tokenHashKeyring[env.TOKEN_HASH_SECRET_KEY_ID] !==
+          env.TOKEN_HASH_SECRET
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["TOKEN_HASH_SECRET_KEYS"],
+          message:
+            "TOKEN_HASH_SECRET_KEYS active secret must match TOKEN_HASH_SECRET",
+        });
+      }
+    }
+
     if (
       env.EMAIL_OUTBOX_LOCK_HEARTBEAT_MS >=
       env.EMAIL_OUTBOX_LOCK_TIMEOUT_MS
@@ -695,6 +819,19 @@ const envSchema = z
           path: ["EMAIL_OUTBOX_ENCRYPTION_KEY_ID"],
           message:
             "EMAIL_OUTBOX_ENCRYPTION_KEY_ID must exist in EMAIL_OUTBOX_ENCRYPTION_KEYS",
+        });
+      }
+
+      if (
+        env.EMAIL_OUTBOX_ENCRYPTION_KEYS &&
+        emailKeyring[env.EMAIL_OUTBOX_ENCRYPTION_KEY_ID] !==
+          env.EMAIL_OUTBOX_ENCRYPTION_KEY
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["EMAIL_OUTBOX_ENCRYPTION_KEYS"],
+          message:
+            "EMAIL_OUTBOX_ENCRYPTION_KEYS active secret must match EMAIL_OUTBOX_ENCRYPTION_KEY",
         });
       }
     }

@@ -24,6 +24,16 @@ enum SessionStatus {
   EXPIRED
 }
 
+enum SessionTerminationReason {
+  LOGOUT
+  LOGOUT_ALL
+  PASSWORD_RESET
+  PASSWORD_CHANGED
+  REFRESH_TOKEN_REUSE
+  SESSION_EXPIRED
+  ADMIN_REVOKED
+}
+
 enum AuditAction {
   REGISTER
   LOGIN_SUCCESS
@@ -55,6 +65,12 @@ enum EmailStatus {
 enum LoginLockIdentityType {
   EMAIL
   IP
+}
+
+enum AuthActionRateLimitAction {
+  FORGOT_PASSWORD
+  RESEND_VERIFICATION
+  REGISTER_IP
 }
 
 enum SecurityEventType {
@@ -265,11 +281,17 @@ model Session {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  status SessionStatus @default(ACTIVE)
-  revokedAt DateTime?
+  status            SessionStatus             @default(ACTIVE)
+  revokedAt         DateTime?
+  lastUsedAt        DateTime?
+  terminatedAt      DateTime?
+  terminatedBy      String?
+  terminatedReason  SessionTerminationReason?
 
-  userAgent String?
-  ipAddress String?
+  userAgent             String?
+  ipAddress             String?
+  deviceName            String?
+  deviceFingerprintHash String?
 
   refreshTokens RefreshToken[]
 
@@ -280,6 +302,9 @@ model Session {
   @@index([userId])
   @@index([status])
   @@index([revokedAt])
+  @@index([lastUsedAt])
+  @@index([terminatedAt])
+  @@index([deviceFingerprintHash])
 }
 
 model RefreshToken {
@@ -513,6 +538,24 @@ model LoginLock {
   @@unique([identityType, identityKey])
   @@index([lockedUntil])
   @@index([identityType, lockedUntil])
+}
+
+model AuthActionRateLimit {
+  id String @id @default(cuid())
+
+  action      AuthActionRateLimitAction
+  identityKey String
+
+  attempts        Int       @default(0)
+  windowStartedAt DateTime  @default(now())
+  lockedUntil     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([action, identityKey])
+  @@index([action, windowStartedAt])
+  @@index([lockedUntil])
 }
 
 model EmailOutbox {

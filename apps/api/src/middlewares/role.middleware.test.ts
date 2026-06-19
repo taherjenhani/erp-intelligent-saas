@@ -4,15 +4,20 @@ import "../test/setup-env";
 import type { Role } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
-import { PermissionError } from "../lib/errors";
+import { PermissionError, ValidationError } from "../lib/errors";
 import type { AuthContext } from "./auth.middleware";
 import {
+  assertStoreBelongsToOrganization,
   requireOrganizationPermission,
   requireOrganizationRole,
+  requirePlatformRole,
   requireStoreInOrganization,
   requireStorePermission,
   type RoleAccess,
   type RoleGuardOptions,
+  withOrgAccess,
+  withStoreAccess,
+  withStoreOrgAccess,
 } from "./role.middleware";
 
 const reply = {} as FastifyReply;
@@ -103,12 +108,14 @@ test("requireStorePermission denies missing store permission with audit metadata
   assert.equal(audit.metadata()?.storeId, "store-1");
 });
 
-test("requireStoreInOrganization denies cross-organization store access", async () => {
-  const audit = deniedAuditCapture();
-  const guard = requireStoreInOrganization("storeId", "organizationId", {
-    access: access(),
-    ...audit.options,
-  });
+test("assertStoreBelongsToOrganization rejects cross-organization store URLs", async () => {
+  const guard = assertStoreBelongsToOrganization(
+    "storeId",
+    "organizationId",
+    {
+      access: access(),
+    }
+  );
 
   await assert.rejects(
     () =>
@@ -119,9 +126,31 @@ test("requireStoreInOrganization denies cross-organization store access", async 
         }),
         reply
       ),
-    PermissionError
+    ValidationError
   );
-  assert.equal(audit.metadata()?.reason, "store_not_in_organization");
+});
+
+test("requireStoreInOrganization validates URL coherence before platform admin bypass", async () => {
+  const guard = requireStoreInOrganization("storeId", "organizationId", {
+    access: access(),
+  });
+  const superAdminAuth: AuthContext = {
+    ...baseAuth,
+    role: "EMPLOYEE",
+    platformRole: "SUPER_ADMIN",
+  };
+
+  await assert.rejects(
+    () =>
+      guard(
+        request(superAdminAuth, {
+          storeId: "store-1",
+          organizationId: "org-2",
+        }),
+        reply
+      ),
+    ValidationError
+  );
 });
 
 test("requireOrganizationRole allows tenant admin role", async () => {
@@ -145,4 +174,54 @@ test("requireOrganizationPermission checks tenant role permissions", async () =>
   );
 
   await guard(request(baseAuth, { organizationId: "org-1" }), reply);
+});
+
+test("requirePlatformRole ignores legacy user role SUPER_ADMIN", async () => {
+  const audit = deniedAuditCapture();
+  const guard = requirePlatformRole(["SUPER_ADMIN"], {
+    access: access(),
+    ...audit.options,
+  });
+  const legacySuperAdminAuth: AuthContext = {
+    ...baseAuth,
+    role: "SUPER_ADMIN",
+    platformRole: "USER",
+  };
+
+  await assert.rejects(
+    () =>
+      guard(request(legacySuperAdminAuth, { organizationId: "org-1" }), reply),
+    PermissionError
+  );
+  assert.equal(audit.metadata()?.reason, "platform_role_not_allowed");
+});
+
+test("route access builders compose auth and tenant guards", () => {
+  assert.equal(
+    withOrgAccess("organizationId", "users.write").length,
+    2
+  );
+  assert.equal(withStoreAccess("storeId", "stores.write").length, 2);
+  assert.equal(
+    withStoreOrgAccess("storeId", "organizationId", "stores.write")
+      .length,
+    3
+  );
+});
+
+test("withStoreOrgAccess fails explicitly when route params are missing", async () => {
+  const guards = withStoreOrgAccess(
+    "storeId",
+    "organizationId",
+    "stores.write",
+    {
+      access: access(),
+    }
+  );
+  const assertCoherentStore = guards[1];
+
+  await assert.rejects(
+    () => assertCoherentStore(request(baseAuth, {}), reply),
+    ValidationError
+  );
 });

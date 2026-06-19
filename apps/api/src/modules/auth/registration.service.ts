@@ -13,7 +13,9 @@ import {
   hashPassword,
 } from "../../utils/hash";
 import { writeAuthAudit } from "./auth-audit.service";
+import { assertRegisterActionAllowed } from "./auth-action-rate-limit.service";
 import { toPublicUser } from "./auth.mapper";
+import { applyAuthResponseJitter } from "./auth-response-jitter.service";
 import {
   createRegisteredUser,
   findActiveStoreForRegistration,
@@ -37,6 +39,8 @@ export async function registerUser(
 ) {
   const email = data.email.trim().toLowerCase();
 
+  await assertRegisterActionAllowed(context.ipAddress);
+
   let storeOrganizationId: string | null = null;
 
   if (data.storeId) {
@@ -58,6 +62,8 @@ export async function registerUser(
   const hashedPassword = await hashedPasswordPromise;
 
   if (existingUser) {
+    await applyAuthResponseJitter();
+
     return {
       user: null,
       emailVerificationToken: null,
@@ -110,6 +116,8 @@ export async function registerUser(
     });
   } catch (error) {
     if (isUniqueConstraintError(error)) {
+      await applyAuthResponseJitter();
+
       return {
         user: null,
         emailVerificationToken: null,

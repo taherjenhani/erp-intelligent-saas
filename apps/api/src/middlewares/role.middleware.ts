@@ -2,8 +2,9 @@ import type { PlatformRole, Role } from "@prisma/client";
 import type { FastifyReply, FastifyRequest } from "fastify";
 
 import { writeAuditLog } from "../lib/audit";
-import { PermissionError } from "../lib/errors";
+import { PermissionError, ValidationError } from "../lib/errors";
 import { prisma } from "../lib/prisma";
+import { requireAuth } from "./auth.middleware";
 
 type DeniedAuditWriter = typeof writeAuditLog;
 
@@ -496,10 +497,16 @@ export function requireStoreInOrganization(
   options: RoleGuardOptions = {}
 ) {
   const access = roleAccess(options);
+  const assertCoherentStore =
+    assertStoreBelongsToOrganization(
+      storeIdParam,
+      organizationIdParam,
+      options
+    );
 
   return async function (
     request: FastifyRequest,
-    _reply: FastifyReply
+    reply: FastifyReply
   ) {
     const auth = request.auth;
 
@@ -511,25 +518,15 @@ export function requireStoreInOrganization(
       );
     }
 
-    const params = request.params as Record<string, string | undefined>;
-    const storeId = params[storeIdParam];
-    const organizationId = params[organizationIdParam];
-
-    if (!storeId || !organizationId) {
-      return await denyAccess(
-        request,
-        {
-          reason: "missing_store_or_organization_id",
-          storeIdParam,
-          organizationIdParam,
-        },
-        options.writeDeniedAudit
-      );
-    }
+    await assertCoherentStore(request, reply);
 
     if (auth.platformRole === "SUPER_ADMIN") {
       return;
     }
+
+    const params = request.params as Record<string, string | undefined>;
+    const storeId = params[storeIdParam] as string;
+    const organizationId = params[organizationIdParam] as string;
 
     if (!(await access.storeBelongsToOrganization(storeId, organizationId))) {
       await denyAccess(
@@ -543,4 +540,76 @@ export function requireStoreInOrganization(
       );
     }
   };
+}
+
+export function assertStoreBelongsToOrganization(
+  storeIdParam: string,
+  organizationIdParam: string,
+  options: RoleGuardOptions = {}
+) {
+  const access = roleAccess(options);
+
+  return async function (
+    request: FastifyRequest,
+    _reply: FastifyReply
+  ) {
+    const params = request.params as Record<string, string | undefined>;
+    const storeId = params[storeIdParam];
+    const organizationId = params[organizationIdParam];
+
+    if (!storeId || !organizationId) {
+      throw new ValidationError(
+        "Store and organization identifiers are required"
+      );
+    }
+
+    if (!(await access.storeBelongsToOrganization(storeId, organizationId))) {
+      throw new ValidationError(
+        "Store does not belong to the requested organization"
+      );
+    }
+  };
+}
+
+export function withOrgAccess(
+  organizationIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  return [
+    requireAuth,
+    requireOrganizationPermission(
+      organizationIdParam,
+      permissionKey,
+      options
+    ),
+  ];
+}
+
+export function withStoreAccess(
+  storeIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  return [
+    requireAuth,
+    requireStorePermission(storeIdParam, permissionKey, options),
+  ];
+}
+
+export function withStoreOrgAccess(
+  storeIdParam: string,
+  organizationIdParam: string,
+  permissionKey: string,
+  options: RoleGuardOptions = {}
+) {
+  return [
+    requireAuth,
+    assertStoreBelongsToOrganization(
+      storeIdParam,
+      organizationIdParam,
+      options
+    ),
+    requireStorePermission(storeIdParam, permissionKey, options),
+  ];
 }

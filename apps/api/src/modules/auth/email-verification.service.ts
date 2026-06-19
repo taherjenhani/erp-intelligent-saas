@@ -6,6 +6,8 @@ import {
 import { reportOperationalError } from "../../lib/operationalErrors";
 import { prisma } from "../../lib/prisma";
 import { writeAuthAudit } from "./auth-audit.service";
+import { assertResendVerificationActionAllowed } from "./auth-action-rate-limit.service";
+import { applyAuthResponseJitter } from "./auth-response-jitter.service";
 import { consumeAuthToken, createAuthToken } from "./auth-token.service";
 import type {
   ResendEmailVerificationInput,
@@ -45,6 +47,9 @@ export async function resendEmailVerification(
   context: AuthContextInput = {}
 ) {
   const email = data.email.trim().toLowerCase();
+
+  await assertResendVerificationActionAllowed(email);
+
   const user = await prisma.user.findUnique({
     where: {
       email,
@@ -58,6 +63,8 @@ export async function resendEmailVerification(
   });
 
   if (!user || !user.isActive || user.emailVerifiedAt) {
+    await applyAuthResponseJitter();
+
     return {
       emailVerificationToken: null,
     };

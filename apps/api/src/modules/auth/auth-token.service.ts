@@ -1,5 +1,6 @@
-import type { AuthTokenPurpose, Prisma } from "@prisma/client";
+import type { AuthTokenPurpose } from "@prisma/client";
 
+import { env } from "../../config/env";
 import { AuthError } from "../../lib/errors";
 import { prisma } from "../../lib/prisma";
 import {
@@ -7,10 +8,21 @@ import {
   getTokenHashCandidates,
   hashToken,
 } from "../../utils/token";
+import {
+  createAuthTokenRecord,
+  findUsableAuthTokenByHashes,
+  markAuthTokenRecordUsed,
+  type PrismaClientLike,
+} from "./auth-token.repository";
 
-type PrismaClientLike = Prisma.TransactionClient | typeof prisma;
-
-const AUTH_TOKEN_DURATION_MS = 30 * 60 * 1000;
+export function authTokenTtlMs(purpose: AuthTokenPurpose) {
+  switch (purpose) {
+    case "EMAIL_VERIFICATION":
+      return env.EMAIL_VERIFICATION_TOKEN_TTL_MS;
+    case "PASSWORD_RESET":
+      return env.PASSWORD_RESET_TOKEN_TTL_MS;
+  }
+}
 
 export async function createAuthToken(
   userId: string,
@@ -18,15 +30,17 @@ export async function createAuthToken(
   client: PrismaClientLike = prisma
 ) {
   const token = generateRandomToken();
+  const expiresAt = new Date(Date.now() + authTokenTtlMs(purpose));
 
-  await client.authToken.create({
-    data: {
+  await createAuthTokenRecord(
+    {
       tokenHash: await hashToken(token),
       purpose,
       userId,
-      expiresAt: new Date(Date.now() + AUTH_TOKEN_DURATION_MS),
+      expiresAt,
     },
-  });
+    client
+  );
 
   return token;
 }
@@ -41,35 +55,26 @@ export async function consumeAuthToken(
 ) {
   const now = new Date();
   const tokenHashes = await getTokenHashCandidates(token);
-  const authToken = await client.authToken.findFirst({
-    where: {
-      tokenHash: {
-        in: tokenHashes,
-      },
+  const authToken = await findUsableAuthTokenByHashes(
+    {
+      tokenHashes,
       purpose,
-      usedAt: null,
-      expiresAt: {
-        gt: now,
-      },
+      now,
     },
-  });
+    client
+  );
 
   if (!authToken) {
     throw new AuthError(errorCode, "Invalid or expired token");
   }
 
-  const consumed = await client.authToken.updateMany({
-    where: {
-      id: authToken.id,
-      usedAt: null,
-      expiresAt: {
-        gt: now,
-      },
+  const consumed = await markAuthTokenRecordUsed(
+    {
+      authTokenId: authToken.id,
+      now,
     },
-    data: {
-      usedAt: now,
-    },
-  });
+    client
+  );
 
   if (consumed.count !== 1) {
     throw new AuthError(errorCode, "Invalid or expired token");
@@ -88,18 +93,14 @@ export async function findValidAuthToken(
 ) {
   const now = new Date();
   const tokenHashes = await getTokenHashCandidates(token);
-  const authToken = await client.authToken.findFirst({
-    where: {
-      tokenHash: {
-        in: tokenHashes,
-      },
+  const authToken = await findUsableAuthTokenByHashes(
+    {
+      tokenHashes,
       purpose,
-      usedAt: null,
-      expiresAt: {
-        gt: now,
-      },
+      now,
     },
-  });
+    client
+  );
 
   if (!authToken) {
     throw new AuthError(errorCode, "Invalid or expired token");
@@ -116,18 +117,13 @@ export async function markAuthTokenUsed(
   client: PrismaClientLike = prisma
 ) {
   const now = new Date();
-  const consumed = await client.authToken.updateMany({
-    where: {
-      id: authTokenId,
-      usedAt: null,
-      expiresAt: {
-        gt: now,
-      },
+  const consumed = await markAuthTokenRecordUsed(
+    {
+      authTokenId,
+      now,
     },
-    data: {
-      usedAt: now,
-    },
-  });
+    client
+  );
 
   if (consumed.count !== 1) {
     throw new AuthError(errorCode, "Invalid or expired token");
